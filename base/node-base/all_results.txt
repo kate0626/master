@@ -1,0 +1,150 @@
+=== Running baseRW.py (Trial 1) ===
+Average length: 8.74
+Total length: 874
+Total time: 0.0008778340015851427
+
+=== Running baseRW.py (Trial 2) ===
+Average length: 9.45
+Total length: 945
+Total time: 0.0009227909995388472
+
+=== Running baseRW.py (Trial 3) ===
+Average length: 9.39
+Total length: 939
+Total time: 0.0009253330008505145
+
+=== Running baseRW.py (Trial 4) ===
+Average length: 10.71
+Total length: 1071
+Total time: 0.0010454170005687047
+
+=== Running baseRW.py (Trial 5) ===
+Average length: 9.36
+Total length: 936
+Total time: 0.0008937090005929349
+
+=== Running baseRW.py (Trial 6) ===
+Average length: 8.23
+Total length: 823
+Total time: 0.0008074580000538845
+
+=== Running baseRW.py (Trial 7) ===
+Average length: 10.58
+Total length: 1058
+Total time: 0.001051541999913752
+
+=== Running baseRW.py (Trial 8) ===
+Average length: 8.59
+Total length: 859
+Total time: 0.0008351249998668209
+
+=== Running baseRW.py (Trial 9) ===
+Average length: 9.9
+Total length: 990
+Total time: 0.000977457999397302
+
+=== Running baseRW.py (Trial 10) ===
+Average length: 11.72
+Total length: 1172
+Total time: 0.0011462919992482057
+
+=== Running before.py (Trial 1) ===
+Average length: 9.06
+Total length: 906
+Total time: 0.001403500000378699
+
+=== Running before.py (Trial 2) ===
+Average length: 8.65
+Total length: 865
+Total time: 0.0013441669998428551
+
+=== Running before.py (Trial 3) ===
+Average length: 10.62
+Total length: 1062
+Total time: 0.0016492920003656764
+
+=== Running before.py (Trial 4) ===
+Average length: 8.78
+Total length: 878
+Total time: 0.0013876250013709068
+
+=== Running before.py (Trial 5) ===
+Average length: 10.1
+Total length: 1010
+Total time: 0.001517874999990454
+
+=== Running before.py (Trial 6) ===
+Average length: 10.26
+Total length: 1026
+Total time: 0.0016323749987350311
+
+=== Running before.py (Trial 7) ===
+Average length: 9.72
+Total length: 972
+Total time: 0.0014654589995188871
+
+=== Running before.py (Trial 8) ===
+Average length: 9.2
+Total length: 920
+Total time: 0.0014422090007428778
+
+=== Running before.py (Trial 9) ===
+Average length: 8.68
+Total length: 868
+Total time: 0.0013000839990127133
+
+=== Running before.py (Trial 10) ===
+Average length: 8.42
+Total length: 842
+Total time: 0.0012719590013148263
+
+=== Running after.py (Trial 1) ===
+Average length: 10.89
+Total length: 1089
+Total time: 0.0011771249992307276
+
+=== Running after.py (Trial 2) ===
+Average length: 10.38
+Total length: 1038
+Total time: 0.0011077500003011664
+
+=== Running after.py (Trial 3) ===
+Average length: 10.19
+Total length: 1019
+Total time: 0.0011231659991608467
+
+=== Running after.py (Trial 4) ===
+Average length: 10.84
+Total length: 1084
+Total time: 0.001196249999338761
+
+=== Running after.py (Trial 5) ===
+Average length: 9.9
+Total length: 990
+Total time: 0.0010709580001275754
+
+=== Running after.py (Trial 6) ===
+Average length: 10.1
+Total length: 1010
+Total time: 0.0011222920002182946
+
+=== Running after.py (Trial 7) ===
+Average length: 9.27
+Total length: 927
+Total time: 0.0009764160004124278
+
+=== Running after.py (Trial 8) ===
+Average length: 8.84
+Total length: 884
+Total time: 0.000930292000703048
+
+=== Running after.py (Trial 9) ===
+Average length: 10.58
+Total length: 1058
+Total time: 0.00111424999886367
+
+=== Running after.py (Trial 10) ===
+Average length: 9.04
+Total length: 904
+Total time: 0.0009741249996295664
+
