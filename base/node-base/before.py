@@ -6,7 +6,7 @@ import time
 # https://github.com/Maikooon/school_lab-b/blob/main/test/test/RW/main.py
 # エッジリストファイルとコミュニティファイルのパス
 edges_file = "./../dataset/Louvain/graph/karate.gr"
-property_file = "./../dataset/private/karate.txt"
+property_file = "./../dataset/node-base/karate.txt"
 # communities_file = "a.tcm"
 
 # グラフの定義
