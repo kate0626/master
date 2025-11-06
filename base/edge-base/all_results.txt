@@ -1,0 +1,130 @@
+=== Running ./../node-base/baseRW.py (Trial 1) ===
+Average length: 9.25
+Total length: 925
+Total time: 0.0008919999818317592
+
+=== Running ./../node-base/baseRW.py (Trial 2) ===
+Average length: 9.47
+Total length: 947
+Total time: 0.0009287919965572655
+
+=== Running ./../node-base/baseRW.py (Trial 3) ===
+Average length: 9.76
+Total length: 976
+Total time: 0.0009664160315878689
+
+=== Running ./../node-base/baseRW.py (Trial 4) ===
+Average length: 10.41
+Total length: 1041
+Total time: 0.0010078339837491512
+
+=== Running ./../node-base/baseRW.py (Trial 5) ===
+Average length: 8.94
+Total length: 894
+Total time: 0.0008554999949410558
+
+=== Running ./../node-base/baseRW.py (Trial 6) ===
+Average length: 9.97
+Total length: 997
+Total time: 0.0009865000029094517
+
+=== Running ./../node-base/baseRW.py (Trial 7) ===
+Average length: 8.66
+Total length: 866
+Total time: 0.0008516659727320075
+
+=== Running ./../node-base/baseRW.py (Trial 8) ===
+Average length: 9.0
+Total length: 900
+Total time: 0.0008833750034682453
+
+=== Running ./../node-base/baseRW.py (Trial 9) ===
+Average length: 9.91
+Total length: 991
+Total time: 0.0009520830353721976
+
+=== Running ./../node-base/baseRW.py (Trial 10) ===
+Average length: 9.13
+Total length: 913
+Total time: 0.0008699159952811897
+
+=== Running oneside-rw.py (Trial 1) ===
+Average length: 8.46
+Total time: 0.0012681669904850423
+
+=== Running oneside-rw.py (Trial 2) ===
+Average length: 9.80
+Total time: 0.0014881670358590782
+
+=== Running oneside-rw.py (Trial 3) ===
+Average length: 9.72
+Total time: 0.0014727499801665545
+
+=== Running oneside-rw.py (Trial 4) ===
+Average length: 10.90
+Total time: 0.0016339999856427312
+
+=== Running oneside-rw.py (Trial 5) ===
+Average length: 10.15
+Total time: 0.0015196670428849757
+
+=== Running oneside-rw.py (Trial 6) ===
+Average length: 9.44
+Total time: 0.0014029580052010715
+
+=== Running oneside-rw.py (Trial 7) ===
+Average length: 10.64
+Total time: 0.0016304170130752027
+
+=== Running oneside-rw.py (Trial 8) ===
+Average length: 11.10
+Total time: 0.0016760000144131482
+
+=== Running oneside-rw.py (Trial 9) ===
+Average length: 10.32
+Total time: 0.0015677919727750123
+
+=== Running oneside-rw.py (Trial 10) ===
+Average length: 11.16
+Total time: 0.0016977500054053962
+
+=== Running separate-rw.py (Trial 1) ===
+Average length: 10.55
+Total time: 0.0015067499480210245
+
+=== Running separate-rw.py (Trial 2) ===
+Average length: 10.78
+Total time: 0.0015539589803665876
+
+=== Running separate-rw.py (Trial 3) ===
+Average length: 11.45
+Total time: 0.0016478329780511558
+
+=== Running separate-rw.py (Trial 4) ===
+Average length: 8.58
+Total time: 0.0012095840065740049
+
+=== Running separate-rw.py (Trial 5) ===
+Average length: 10.15
+Total time: 0.0014402500237338245
+
+=== Running separate-rw.py (Trial 6) ===
+Average length: 10.45
+Total time: 0.0014889999874867499
+
+=== Running separate-rw.py (Trial 7) ===
+Average length: 9.21
+Total time: 0.0013167090364731848
+
+=== Running separate-rw.py (Trial 8) ===
+Average length: 9.93
+Total time: 0.001393207989167422
+
+=== Running separate-rw.py (Trial 9) ===
+Average length: 11.2
+Total time: 0.001596582995261997
+
+=== Running separate-rw.py (Trial 10) ===
+Average length: 10.45
+Total time: 0.0014996249810792506
+

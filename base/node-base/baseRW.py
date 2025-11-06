@@ -5,7 +5,7 @@ import time
 # ここから引用したので、元Verは以下のURlから参照
 # https://github.com/Maikooon/school_lab-b/blob/main/test/test/RW/main.py
 # エッジリストファイルとコミュニティファイルのパス
-edges_file = "./../dataset/Louvain/graph/karate.gr"
+edges_file = "./../../dataset/Louvain/graph/karate.gr"
 # communities_file = "a.tcm"
 
 # グラフの定義
