@@ -7,9 +7,10 @@ SERVERS=(
   "host=ab06 id=1 ip=10.58.60.6 port=3000"
 )
 
-REMOTE_CMD_BASE="python3 -u base/base-many-server/remote_server.py \
+REMOTE_CMD_BASE="python3 base/base-many-server/remote_server.py \
   --server-count 2 \
-  --edges dataset/Louvain/graph/karate.gr"
+  --edges dataset/Louvain/graph/karate.gr \
+  --server-endpoints 10.58.60.5:3000 10.58.60.6:3000"
 
 TARGET_LOG="^\[Server"
 TIMEOUT=10  # 秒
@@ -77,10 +78,8 @@ echo "=== 全サーバ起動確認完了 ==="
 # ======== ローカルジョブ実行 ========
 echo ">>> 分散ランダムウォーク開始"
 
-python3 base/base-many-server/base.py \
-  --mode remote \
-  --servers 2 \
-  --server-endpoints "${SERVER_IPS["0"]}" "${SERVER_IPS["1"]}" \
-  --walks 1 --alpha 0.1 --start-node 1 --seed 42
+python3 base/base-many-server/base.py --servers 2 \
+  --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 \
+  --walks 3 --alpha 0.5 --start-node 1 --seed 42
 
 echo "=== ローカルジョブ完了 ==="
