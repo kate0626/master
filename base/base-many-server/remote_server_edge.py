@@ -1,44 +1,27 @@
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
 import json
+import random
+import time
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
+from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
 
 NodeId = Union[int, str]
 
 
+# ---------------------------------------------------------------------------
+# Shared utilities
+# ---------------------------------------------------------------------------
 def make_edge_id(u: int, v: int) -> str:
     a, b = sorted((u, v))
     return f"edge_{a}_{b}"
-
-
-@dataclass(frozen=True)
-class Neighbor:
-    node_id: NodeId
-    server_id: int
-
-
-class ModuloPartitioner:
-    def __init__(self, server_count: int) -> None:
-        if server_count <= 0:
-            raise ValueError("server_count must be positive")
-        self.server_count = server_count
-
-    def assign(self, node_id: int) -> int:
-        return self.assign_node(node_id)
-
-    def assign_node(self, node_id: int) -> int:
-        return node_id % self.server_count
-
-    def assign_edge(self, u: int, v: int) -> int:
-        a, b = sorted((u, v))
-        key = a * 1_000_003 + b
-        return key % self.server_count
 
 
 def load_edge_list(edge_path: Path) -> List[Tuple[int, int]]:
@@ -56,37 +39,49 @@ def load_edge_list(edge_path: Path) -> List[Tuple[int, int]]:
     return edges
 
 
-def resolve_edge_path(edge_arg: str) -> Path:
-    candidate = Path(edge_arg).expanduser()
-
-    if candidate.is_absolute() and candidate.exists():
-        return candidate
-
-    search_paths = []
-    if not candidate.is_absolute():
-        search_paths.append((Path.cwd() / candidate).resolve())
-        search_paths.append((Path(__file__).resolve().parent / candidate).resolve())
-
-    for path in search_paths:
-        if path.exists():
-            return path
-
-    return search_paths[0] if search_paths else candidate
+@dataclass(frozen=True)
+class Neighbor:
+    node_id: NodeId
+    server_id: int
 
 
-def enumerate_nodes(edges: Sequence[Tuple[int, int]]) -> Iterable[int]:
-    seen: Set[int] = set()
-    for u, v in edges:
-        if u not in seen:
-            seen.add(u)
-            yield u
-        if v not in seen:
-            seen.add(v)
-            yield v
+class ModuloPartitioner:
+    """
+    Nodes are assigned by modulo.
+    Edges are treated as first-class entities and assigned by hashing the endpoints.
+    """
+
+    def __init__(self, server_count: int) -> None:
+        if server_count <= 0:
+            raise ValueError("server_count must be positive")
+        self.server_count = server_count
+
+    def assign_node(self, node_id: int) -> int:
+        return node_id % self.server_count
+
+    def assign_edge(self, u: int, v: int) -> int:
+        a, b = sorted((u, v))
+        return (a * 1_000_003 + b) % self.server_count
+
+    def assign_entity(self, entity_id: NodeId) -> int:
+        if isinstance(entity_id, int):
+            return self.assign_node(entity_id)
+        if isinstance(entity_id, str) and entity_id.startswith("edge_"):
+            try:
+                _, raw_u, raw_v = entity_id.split("_", 2)
+                return self.assign_edge(int(raw_u), int(raw_v))
+            except ValueError as exc:
+                raise ValueError(f"Malformed edge id: {entity_id!r}") from exc
+        raise TypeError(f"Unsupported entity id type: {entity_id!r}")
 
 
 class GraphShard:
-    """Stores the portion of the graph owned by a single server."""
+    """
+    Each shard owns two types of entities:
+      * graph nodes (int id)
+      * synthetic edge nodes (edge_u_v)
+    Random walks traverse the bipartite expansion node -> edge -> node -> ...
+    """
 
     def __init__(
         self, edges: Sequence[Tuple[int, int]], server_id: int, server_count: int
@@ -99,45 +94,197 @@ class GraphShard:
         self.local_entities: Set[NodeId] = set()
         self.neighbor_map: Dict[NodeId, List[Neighbor]] = defaultdict(list)
 
-        self._register_nodes(edges)
-        self._register_edges(edges)
-
-    def _register_nodes(self, edges: Sequence[Tuple[int, int]]) -> None:
-        for node in enumerate_nodes(edges):
-            if self.partitioner.assign_node(node) == self.server_id:
-                self.local_entities.add(node)
-                self.neighbor_map.setdefault(node, [])
-
-    def _register_edges(self, edges: Sequence[Tuple[int, int]]) -> None:
         for u, v in edges:
             edge_id = make_edge_id(u, v)
+            u_owner = self.partitioner.assign_node(u)
+            v_owner = self.partitioner.assign_node(v)
             edge_owner = self.partitioner.assign_edge(u, v)
+
+            if u_owner == self.server_id:
+                self._ensure_entity(u)
+            if v_owner == self.server_id:
+                self._ensure_entity(v)
             if edge_owner == self.server_id:
-                self.local_entities.add(edge_id)
-                self.neighbor_map.setdefault(edge_id, [])
-            self._connect_incidence(u, edge_id, edge_owner)
-            self._connect_incidence(v, edge_id, edge_owner)
+                self._ensure_entity(edge_id)
 
-    def _connect_incidence(self, node_id: int, edge_id: str, edge_owner: int) -> None:
-        node_owner = self.partitioner.assign_node(node_id)
-        if node_owner == self.server_id == edge_owner:
-            self.neighbor_map[node_id].append(Neighbor(edge_id, edge_owner))
-            self.neighbor_map[edge_id].append(Neighbor(node_id, node_owner))
-        elif node_owner == self.server_id and edge_owner != self.server_id:
-            self.neighbor_map[node_id].append(Neighbor(edge_id, edge_owner))
-        elif edge_owner == self.server_id and node_owner != self.server_id:
-            self.neighbor_map[edge_id].append(Neighbor(node_id, node_owner))
+            if u_owner == self.server_id:
+                self.neighbor_map[u].append(Neighbor(edge_id, edge_owner))
+            if v_owner == self.server_id:
+                self.neighbor_map[v].append(Neighbor(edge_id, edge_owner))
+            if edge_owner == self.server_id:
+                self.neighbor_map[edge_id].append(Neighbor(u, u_owner))
+                self.neighbor_map[edge_id].append(Neighbor(v, v_owner))
 
-    def get_neighbors(self, node_id: NodeId) -> Optional[List[Neighbor]]:
-        if node_id not in self.local_entities:
+    def _ensure_entity(self, entity_id: NodeId) -> None:
+        self.local_entities.add(entity_id)
+        self.neighbor_map.setdefault(entity_id, [])
+
+    def get_neighbors(self, entity_id: NodeId) -> Optional[List[Neighbor]]:
+        if entity_id not in self.local_entities:
             return None
-        return self.neighbor_map.get(node_id, [])
+        return list(self.neighbor_map.get(entity_id, []))
 
 
-class NeighborRequestHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802
+# ---------------------------------------------------------------------------
+# RNG (de)serialization helpers
+# ---------------------------------------------------------------------------
+def _to_jsonable(obj: Any) -> Any:
+    if isinstance(obj, tuple):
+        return [_to_jsonable(x) for x in obj]
+    if isinstance(obj, list):
+        return [_to_jsonable(x) for x in obj]
+    return obj
+
+
+def _from_jsonable(obj: Any) -> Any:
+    if isinstance(obj, list):
+        return tuple(_from_jsonable(x) for x in obj)
+    return obj
+
+
+def serialize_rng_state(rng: random.Random) -> Any:
+    return _to_jsonable(rng.getstate())
+
+
+def deserialize_rng_state(jsonable_state: Any) -> tuple:
+    return _from_jsonable(jsonable_state)
+
+
+# ---------------------------------------------------------------------------
+# Walk execution
+# ---------------------------------------------------------------------------
+@dataclass
+class WalkResult:
+    path: List[NodeId]
+    servers: List[int]
+
+
+class PeerWalker:
+    def __init__(
+        self,
+        shard: GraphShard,
+        endpoints: Sequence[str],
+        request_timeout: float = 5.0,
+        max_hops: int = 100000,
+    ):
+        self.shard = shard
+        self.endpoints = [
+            ep if ep.startswith(("http://", "https://")) else f"http://{ep}"
+            for ep in endpoints
+        ]
+        self.request_timeout = request_timeout
+        self.max_hops = max_hops
+
+    def _get_local_neighbors(self, entity_id: NodeId) -> List[Dict[str, Any]]:
+        neighbors = self.shard.get_neighbors(entity_id)
+        if not neighbors:
+            return []
+        return [asdict(n) for n in neighbors]
+
+    def _post_continue(self, server_id: int, state: dict) -> dict:
+        url = f"{self.endpoints[server_id].rstrip('/')}/continue_walk"
+        data = json.dumps(state).encode("utf-8")
+        req = urllib_request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        with urllib_request.urlopen(req, timeout=self.request_timeout) as resp:
+            return json.loads(resp.read())
+
+    def continue_from_state(self, state: dict) -> dict:
+        current_sid = self.shard.server_id
+
+        rng_state_json = state.get("rng_state")
+        rng = random.Random()
+        if rng_state_json is not None:
+            rng.setstate(deserialize_rng_state(rng_state_json))
+        else:
+            seed = state.get("seed")
+            rng = random.Random(seed)
+
+        current_entity: NodeId = state["current_node"]
+        path = list(state["path"])
+        servers = list(state["servers"])
+        alpha = float(state["alpha"])
+        hops_done = int(state.get("hops_done", 0))
+
+        print(
+            f"[Server {current_sid}] continue_from_state: start entity={current_entity} hops_done={hops_done}"
+        )
+
+        while hops_done < self.max_hops and rng.random() > alpha:
+            hops_done += 1
+            owner = self.shard.partitioner.assign_entity(current_entity)
+            if owner != current_sid:
+                print(
+                    f"[Server {current_sid}] entity {current_entity} not local (owner={owner}) → delegate"
+                )
+                state_out = {
+                    "current_node": current_entity,
+                    "path": path,
+                    "servers": servers,
+                    "alpha": alpha,
+                    "rng_state": serialize_rng_state(rng),
+                    "hops_done": hops_done,
+                }
+                return self._post_continue(owner, state_out)
+
+            neighbors = self._get_local_neighbors(current_entity)
+            if not neighbors:
+                print(
+                    f"[Server {current_sid}] entity {current_entity} has no neighbors → finish"
+                )
+                return {
+                    "finished": True,
+                    "path": path,
+                    "servers": servers,
+                    "hops_done": hops_done,
+                }
+
+            next_choice = rng.choice(neighbors)
+            next_entity: NodeId = next_choice["node_id"]
+            next_server = int(next_choice["server_id"])
+            print(
+                f"[Server {current_sid}] hop {hops_done}: {current_entity} -> {next_entity} (server {next_server})"
+            )
+
+            path.append(next_entity)
+            servers.append(next_server)
+            current_entity = next_entity
+
+            if next_server != current_sid:
+                state_out = {
+                    "current_node": current_entity,
+                    "path": path,
+                    "servers": servers,
+                    "alpha": alpha,
+                    "rng_state": serialize_rng_state(rng),
+                    "hops_done": hops_done,
+                }
+                print(
+                    f"[Server {current_sid}] delegating walk to server {next_server} (entity={current_entity})"
+                )
+                return self._post_continue(next_server, state_out)
+
+        if hops_done >= self.max_hops:
+            print(f"[Server {current_sid}] reached max hops {self.max_hops} → finish")
+        else:
+            print(
+                f"[Server {current_sid}] walk stopped by alpha after {hops_done} hops"
+            )
+        return {
+            "finished": True,
+            "path": path,
+            "servers": servers,
+            "hops_done": hops_done,
+        }
+
+
+# ---------------------------------------------------------------------------
+# HTTP handlers
+# ---------------------------------------------------------------------------
+class EdgeAwareHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
         parsed = urlparse(self.path)
-
         if parsed.path == "/health":
             self._write_json({"status": "ok", "server_id": self.server.server_id})
             return
@@ -147,32 +294,139 @@ class NeighborRequestHandler(BaseHTTPRequestHandler):
             return
 
         query = parse_qs(parsed.query)
-        raw_node = query.get("node", [None])[0]
-        if raw_node is None:
+        raw_entity = query.get("node", [None])[0]
+        if raw_entity is None:
             self.send_error(400, "Missing 'node' query parameter")
             return
 
-        try:
-            node_id: NodeId = int(raw_node)
-        except (ValueError, TypeError):
-            node_id = raw_node
+        entity: NodeId
+        if raw_entity.startswith("edge_"):
+            entity = raw_entity
+        else:
+            try:
+                entity = int(raw_entity)
+            except ValueError:
+                self.send_error(
+                    400, "'node' must be an integer id or an edge id (edge_u_v)"
+                )
+                return
 
-        neighbors = self.server.shard.get_neighbors(node_id)
+        print(
+            f"[Server {self.server.server_id}] neighbor request for entity {entity} from {self.client_address}"
+        )
+
+        neighbors = self.server.shard.get_neighbors(entity)
         if neighbors is None:
-            self.send_error(
-                404, f"Node {node_id} is not owned by server {self.server.server_id}"
-            )
+            self.send_error(404, f"Entity {entity} not owned by this shard")
             return
 
         payload = {
-            "node_id": node_id,
+            "node_id": entity,
             "server_id": self.server.server_id,
-            "neighbors": [asdict(neighbor) for neighbor in neighbors],
+            "neighbors": [asdict(n) for n in neighbors],
         }
         self._write_json(payload)
 
-    def log_message(self, format: str, *args) -> None:  # noqa: A003
-        return  # Suppress default logging noise
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == "/walk":
+            self._handle_walk_start()
+            return
+        if parsed.path == "/continue_walk":
+            self._handle_continue_walk()
+            return
+        self.send_error(404, "Unknown path")
+
+    def _handle_walk_start(self) -> None:
+        params = self._read_json_body()
+        if params is None:
+            return
+
+        start_node = params.get("start_node")
+        alpha = params.get("alpha")
+        walks = int(params.get("walks", 1))
+        seed = params.get("seed", None)
+        endpoints = params.get("endpoints")
+        server_count = params.get("server_count")
+
+        if (
+            start_node is None
+            or alpha is None
+            or endpoints is None
+            or server_count is None
+        ):
+            self.send_error(
+                400,
+                "Missing required parameters: start_node, alpha, endpoints, server_count",
+            )
+            return
+
+        print(
+            f"[Server {self.server.server_id}] /walk start node={start_node} alpha={alpha} walks={walks} seed={seed}"
+        )
+
+        walker = PeerWalker(
+            self.server.shard,
+            endpoints=endpoints,
+            request_timeout=getattr(self.server, "request_timeout", 5.0),
+        )
+        results = []
+        for i in range(walks):
+            rng = random.Random(seed if seed is None else (seed + i))
+            initial_state = {
+                "current_node": int(start_node),
+                "path": [int(start_node)],
+                "servers": [self.server.server_id],
+                "alpha": float(alpha),
+                "rng_state": serialize_rng_state(rng),
+                "hops_done": 0,
+            }
+            res = walker.continue_from_state(initial_state)
+            results.append(res)
+            time.sleep(0.01)
+
+        payload = {"walks": results}
+        print(
+            f"[Server {self.server.server_id}] finished /walk; returning {len(results)} walks"
+        )
+        self._write_json(payload)
+
+    def _handle_continue_walk(self) -> None:
+        state = self._read_json_body()
+        if state is None:
+            return
+
+        print(
+            f"[Server {self.server.server_id}] /continue_walk from {self.client_address} hops_done={state.get('hops_done', 0)}"
+        )
+
+        walker = PeerWalker(
+            self.server.shard,
+            endpoints=self.server.endpoints,
+            request_timeout=getattr(self.server, "request_timeout", 5.0),
+        )
+        try:
+            res = walker.continue_from_state(state)
+        except Exception as exc:
+            self.send_error(500, f"Error during continue_walk: {exc}")
+            return
+
+        self._write_json(res)
+
+    def log_message(self, format: str, *args) -> None:
+        return
+
+    def _read_json_body(self) -> Optional[dict]:
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0:
+            self.send_error(400, "Missing request body")
+            return None
+        body = self.rfile.read(content_length)
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
+            return None
 
     def _write_json(self, payload: dict) -> None:
         encoded = json.dumps(payload).encode("utf-8")
@@ -184,14 +438,25 @@ class NeighborRequestHandler(BaseHTTPRequestHandler):
 
 
 class GraphShardServer(ThreadingHTTPServer):
-    def __init__(self, host: str, port: int, shard: GraphShard) -> None:
-        super().__init__((host, port), NeighborRequestHandler)
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        shard: GraphShard,
+        endpoints: Sequence[str],
+        request_timeout: float = 5.0,
+    ) -> None:
+        super().__init__((host, port), EdgeAwareHandler)
         self.shard = shard
         self.server_id = shard.server_id
+        self.endpoints = endpoints
+        self.request_timeout = request_timeout
 
 
 def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Distributed graph shard server.")
+    parser = argparse.ArgumentParser(
+        description="Distributed random walk server (node + edge bipartite model)."
+    )
     parser.add_argument(
         "--edges",
         default="./../../dataset/Louvain/graph/karate.gr",
@@ -210,35 +475,49 @@ def parse_arguments() -> argparse.Namespace:
         help="Total number of servers participating in the cluster.",
     )
     parser.add_argument(
-        "--host",
-        default="0.0.0.0",
-        help="Host/IP address to bind the shard server.",
+        "--host", default="0.0.0.0", help="Host/IP address to bind the shard server."
     )
     parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Port to expose the shard server.",
+        "--port", type=int, default=8000, help="Port to expose the shard server."
+    )
+    parser.add_argument(
+        "--server-endpoints",
+        nargs="+",
+        required=True,
+        help="Endpoints for all servers in order (host:port).",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=5.0,
+        help="Timeout (sec) when this server queries other shards.",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_arguments()
-    edge_path = resolve_edge_path(args.edges)
+    edge_path = Path(args.edges).expanduser()
+    if not edge_path.exists():
+        raise FileNotFoundError(f"Edge list not found: {edge_path}")
+
     edges = load_edge_list(edge_path)
     shard = GraphShard(edges, server_id=args.server_id, server_count=args.server_count)
-    server = GraphShardServer(args.host, args.port, shard)
-
-    print(
-        f"[Server {args.server_id}] Serving {len(shard.local_entities)} entities "
-        f"on {args.host}:{args.port} (total servers: {args.server_count})"
+    server = GraphShardServer(
+        host=args.host,
+        port=args.port,
+        shard=shard,
+        endpoints=args.server_endpoints,
+        request_timeout=args.request_timeout,
     )
 
+    print(
+        f"[Server {server.server_id}] Serving {len(shard.local_entities)} entities (nodes + edges) on {args.host}:{args.port} / {args.server_count} servers"
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print(f"[Server {args.server_id}] Shutting down.")
+        print(f"[Server {server.server_id}] Shutting down.")
 
 
 if __name__ == "__main__":
