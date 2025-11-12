@@ -50,7 +50,6 @@ def load_edge_list(edge_path: Path) -> List[Tuple[int, int]]:
 @dataclass(frozen=True)
 class Neighbor:
     """
-    データクラスの返し方
     node_id（int か str）と server_id（int）を持つ不変オブジェクト。
     asdict() で辞書化できるため JSON レスポンス作成に便利である。
     """
@@ -150,6 +149,39 @@ class GraphShard:
 
 
 # ---------------------------------------------------------------------------
+# Authorization (entity-granular) helpers
+# ---------------------------------------------------------------------------
+def load_entity_auth_table(
+    path: Optional[Union[str, Path]],
+) -> Dict[int, Dict[str, Set[Any]]]:
+    """
+    JSON format:
+    {
+      "1": { "n": [1,2,5], "e": ["edge_2_5","edge_5_6"] },
+      "2": { "n": [2,3], "e": [] }
+    }
+    Returns: { start_node_int: { "n": set_of_node_strs, "e": set_of_edge_strs } }
+    """
+    if path is None:
+        return {}
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Auth table not found: {p}")
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    out: Dict[int, Dict[str, Set[Any]]] = {}
+    for k, v in raw.items():
+        try:
+            start = int(k)
+        except Exception:
+            # skip non-integer keys
+            continue
+        nodes = set(int(x) for x in v.get("n", []) if x is not None)
+        edges = set(str(x) for x in v.get("e", []) if x is not None)
+        out[start] = {"n": nodes, "e": edges}
+    return out
+
+
+# ---------------------------------------------------------------------------
 # RNG (de)serialization helpers
 # ---------------------------------------------------------------------------
 def _to_jsonable(obj: Any) -> Any:
@@ -177,19 +209,43 @@ def deserialize_rng_state(jsonable_state: Any) -> tuple:
 # ---------------------------------------------------------------------------
 # Walk execution
 # ---------------------------------------------------------------------------
-@dataclass
-class WalkResult:
-    path: List[NodeId]
-    servers: List[int]
 
 
+def _list_to_tuple(obj):
+    if isinstance(obj, list):
+        return tuple(_list_to_tuple(x) for x in obj)
+    return obj
+
+
+def serialize_rng_state(rng: random.Random) -> str:
+    # getstate() はタプルなので、JSON化のためリストに変換
+    return json.dumps(_tuple_to_list(rng.getstate()))
+
+
+def _tuple_to_list(obj):
+    if isinstance(obj, tuple):
+        return [_tuple_to_list(x) for x in obj]
+    return obj
+
+
+def deserialize_rng_state(state_json: str):
+    try:
+        state = json.loads(state_json)
+        # JSONから読み込んだリストをタプルに戻す
+        return _list_to_tuple(state)
+    except Exception:
+        return None
+
+
+## TODO: ここからRW
 class PeerWalker:
     def __init__(
         self,
-        shard: GraphShard,
+        shard,
         endpoints: Sequence[str],
         request_timeout: float = 5.0,
         max_hops: int = 100000,
+        auth_table: Optional[Dict[int, Dict[str, Set[str]]]] = None,
     ):
         self.shard = shard
         self.endpoints = [
@@ -198,14 +254,33 @@ class PeerWalker:
         ]
         self.request_timeout = request_timeout
         self.max_hops = max_hops
+        self.auth_table = auth_table or {}
 
-    def _get_local_neighbors(self, entity_id: NodeId) -> List[Dict[str, Any]]:
+    # --- 認可判定 ---
+    def _is_allowed_entity(self, start_node: int, entity: Any) -> bool:
+        # 認可テーブルからスタートノードを参照して許可できるものとってくる
+        entry = self.auth_table.get(start_node)
+        if entry is None:
+            return False
+        # エンティティがノードの場合、もしエンティティに対象のノードが含まれていればTrue
+        if isinstance(entity, int):
+            return entity in entry.get("n", set())
+        # エンティティがエッジの場合
+        if isinstance(entity, str):
+            return entity in entry.get("e", set())
+        return False
+
+    # --- 隣接取得（ノード→エッジ、エッジ→ノード） ---
+    def _get_local_neighbors(self, entity_id: Any) -> List[Dict[str, Any]]:
+        # 次の隣接ノード、エッジの候補を上げる
         neighbors = self.shard.get_neighbors(entity_id)
         if not neighbors:
             return []
         return [asdict(n) for n in neighbors]
 
+    # --- サーバ間転送 ---
     def _post_continue(self, server_id: int, state: dict) -> dict:
+        # 他のサーバに ランダムウォークの続き を委譲するための HTTP POST 処理、server_id に応じて URL を作り、state（現在のウォーク情報）を JSON で送信。
         url = f"{self.endpoints[server_id].rstrip('/')}/continue_walk"
         data = json.dumps(state).encode("utf-8")
         req = urllib_request.Request(
@@ -214,37 +289,69 @@ class PeerWalker:
         with urllib_request.urlopen(req, timeout=self.request_timeout) as resp:
             return json.loads(resp.read())
 
+    # --- メインロジック ---
     def continue_from_state(self, state: dict) -> dict:
-        # 現在のサーバIDを取得
+        # 現在のサーバのID取得
         current_sid = self.shard.server_id
+        # RWが継続の時もあるので、現在のエンティティを取得
+        rng = random.Random(state.get("seed"))
         rng_state_json = state.get("rng_state")
-        # ランダムに隣接を取得
-        rng = random.Random()
         if rng_state_json is not None:
-            rng.setstate(deserialize_rng_state(rng_state_json))
-        else:
-            seed = state.get("seed")
-            rng = random.Random(seed)
-
-        current_entity: NodeId = state["current_node"]
+            loaded = deserialize_rng_state(rng_state_json)
+            if loaded:
+                rng.setstate(loaded)
+        print(state["current_node"])
+        current_entity = state["current_node"]
         path = list(state["path"])
         servers = list(state["servers"])
         alpha = float(state["alpha"])
         hops_done = int(state.get("hops_done", 0))
 
+        # --- start_node 確定 ---
+        start_node = None
+        if "start_node" in state:
+            try:
+                start_node = int(state["start_node"])
+            except Exception:
+                pass
+        elif path:
+            try:
+                start_node = int(path[0])
+            except Exception:
+                pass
+
+        # たぶんいらない
+        # if start_node is None or start_node not in self.auth_table:
+        #     reason = (
+        #         "no auth entry" if start_node in (None, "") else "invalid start node"
+        #     )
+        #     print(f"[Server {current_sid}] {reason} -> finish")
+        #     return {
+        #         "finished": True,
+        #         "path": path,
+        #         "servers": servers,
+        #         "hops_done": hops_done,
+        #         "denied": True,
+        #         "denied_reason": reason,
+        #     }
+        # ここまでいらない
         print(
-            f"[Server {current_sid}] continue_from_state: start entity={current_entity} hops_done={hops_done}"
+            f"[Server {current_sid}] continue_from_state: start={start_node}, current={current_entity}, hops={hops_done}"
         )
-        # 終了確率より大きかったら継続
+
+        # --- ランダムウォーク ---
+        # 終了確率に達するまで行う
         while hops_done < self.max_hops and rng.random() > alpha:
             hops_done += 1
+
+            # 所有サーバ確認
             owner = self.shard.partitioner.assign_entity(current_entity)
-            # 次のエンティティが別サーバの場合
             if owner != current_sid:
                 print(
                     f"[Server {current_sid}] entity {current_entity} not local (owner={owner}) → delegate"
                 )
                 state_out = {
+                    "start_node": start_node,
                     "current_node": current_entity,
                     "path": path,
                     "servers": servers,
@@ -252,24 +359,56 @@ class PeerWalker:
                     "rng_state": serialize_rng_state(rng),
                     "hops_done": hops_done,
                 }
-                ## メッセージ内容を保持して、次のサーバに送る
                 return self._post_continue(owner, state_out)
 
-            # 次のエンティティが同じサーバだった時
+            # --- 隣接ノードもしくはエッジを取得
             neighbors = self._get_local_neighbors(current_entity)
-            if not neighbors:
+            # if not neighbors:
+            #     print(
+            #         f"[Server {current_sid}] {current_entity} has no neighbors → finish"
+            #     )
+            #     return {
+            #         "finished": True,
+            #         "path": path,
+            #         "servers": servers,
+            #         "hops_done": hops_done,
+            #     }
+
+            # --- 認可を考慮したランダム選択 ---
+            max_retries = len(neighbors)
+            next_choice = None
+            # 認可が失敗しても繰り返すforループ
+            for attempt in range(max_retries):
+                # 乱数で選ぶ
+                candidate = rng.choice(neighbors)
+                cid = candidate["node_id"]
                 print(
-                    f"[Server {current_sid}] entity {current_entity} has no neighbors → finish"
+                    f"[Server {current_sid}] Attempt {attempt+1}/{max_retries}: candidate={cid}"
+                )
+                # ランダムに選んだものが許可されているか
+                if self._is_allowed_entity(start_node, cid):
+                    print(f"[Server {current_sid}] Authorized → move to {cid}")
+                    next_choice = candidate
+                    break
+                # 許可されていない場合は指定回数だけ再試行
+                else:
+                    print(f"[Server {current_sid}] Not authorized → retry")
+
+            if next_choice is None:
+                print(
+                    f"[Server {current_sid}] All {max_retries} neighbors denied → stop"
                 )
                 return {
                     "finished": True,
                     "path": path,
                     "servers": servers,
                     "hops_done": hops_done,
+                    "denied": True,
+                    "denied_reason": f"no authorized neighbors from {current_entity}",
                 }
 
-            next_choice = rng.choice(neighbors)
-            next_entity: NodeId = next_choice["node_id"]
+            # --- 移動処理 ---
+            next_entity = next_choice["node_id"]
             next_server = int(next_choice["server_id"])
             print(
                 f"[Server {current_sid}] hop {hops_done}: {current_entity} -> {next_entity} (server {next_server})"
@@ -279,8 +418,10 @@ class PeerWalker:
             servers.append(next_server)
             current_entity = next_entity
 
+            # サーバ移動が発生したら委譲
             if next_server != current_sid:
                 state_out = {
+                    "start_node": start_node,
                     "current_node": current_entity,
                     "path": path,
                     "servers": servers,
@@ -293,12 +434,12 @@ class PeerWalker:
                 )
                 return self._post_continue(next_server, state_out)
 
+        # --- 終了条件処理 ---
         if hops_done >= self.max_hops:
             print(f"[Server {current_sid}] reached max hops {self.max_hops} → finish")
         else:
-            print(
-                f"[Server {current_sid}] walk stopped by alpha after {hops_done} hops"
-            )
+            print(f"[Server {current_sid}] stopped by alpha after {hops_done} hops")
+
         return {
             "finished": True,
             "path": path,
@@ -398,11 +539,13 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             self.server.shard,
             endpoints=endpoints,
             request_timeout=getattr(self.server, "request_timeout", 5.0),
+            auth_table=getattr(self.server, "auth_table", None),
         )
         results = []
         for i in range(walks):
             rng = random.Random(seed if seed is None else (seed + i))
             initial_state = {
+                "start_node": int(start_node),
                 "current_node": int(start_node),
                 "path": [int(start_node)],
                 "servers": [self.server.server_id],
@@ -434,6 +577,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             self.server.shard,
             endpoints=self.server.endpoints,
             request_timeout=getattr(self.server, "request_timeout", 5.0),
+            auth_table=getattr(self.server, "auth_table", None),
         )
         try:
             res = walker.continue_from_state(state)
@@ -481,6 +625,8 @@ class GraphShardServer(ThreadingHTTPServer):
         self.server_id = shard.server_id
         self.endpoints = endpoints
         self.request_timeout = request_timeout
+        # auth_table will be attached by main() if provided
+        self.auth_table: Dict[int, Dict[str, Set[Any]]] = {}
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -522,6 +668,12 @@ def parse_arguments() -> argparse.Namespace:
         default=5.0,
         help="Timeout (sec) when this server queries other shards.",
     )
+    parser.add_argument(
+        "--auth-file",
+        type=str,
+        default=None,
+        help="Optional JSON file path mapping start_node -> allowed entities (n/e).",
+    )
     return parser.parse_args()
 
 
@@ -540,6 +692,12 @@ def main() -> None:
         endpoints=args.server_endpoints,
         request_timeout=args.request_timeout,
     )
+
+    # load auth table if provided
+    auth_table = {}
+    if args.auth_file:
+        auth_table = load_entity_auth_table(Path(args.auth_file))
+        server.auth_table = auth_table
 
     print(
         f"[Server {server.server_id}] Serving {len(shard.local_entities)} entities (nodes + edges) on {args.host}:{args.port} / {args.server_count} servers"
