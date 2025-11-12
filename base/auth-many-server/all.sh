@@ -27,7 +27,7 @@
 #   --auth-file ${AUTH_JSON}"
 
 # TARGET_LOG="^\[Server"
-# TIMEOUT=0  # 秒
+# TIMEOUT=10  # 秒
 # REPO_DIR="./"
 
 # # ======== クリーンアップ処理 ========
@@ -92,7 +92,7 @@
 
 # python3 base/auth-many-server/controller.py --servers ${SERVER_COUNT} \
 #   --server-endpoints "${SERVER_ENDPOINTS[@]}" \
-#   --walks 10 --alpha 0.5 --start-node 1 --seed 42
+#   --walks 3 --alpha 0.5 --start-node 1 --seed 42
 
 # echo "=== ローカルジョブ完了 ==="
 
@@ -100,18 +100,22 @@
 #!/bin/zsh
 set -euo pipefail
 
-## ./base/auth-many-server/all.sh
-## 使い方: ./base/auth-many-server/all.sh <繰り返し回数>
-## 例: ./base/auth-many-server/all.sh 5
+## 実行例:
+## ./base/auth-many-server/all.sh 10
+## ↑ 10回実行。省略時は5回。
 
-REPS=${1:-1}            # 繰り返し回数（デフォルト1）
+# ======== 設定 ========
 EDGE_FILE="dataset/Louvain/graph/karate.gr"
 AUTH_JSON="base/auth-many-server/auth_by_start.json"
-
 SERVERS=(
   "host=ab05 id=0 ip=10.58.60.5 port=3000"
   "host=ab06 id=1 ip=10.58.60.6 port=3000"
 )
+
+RUN_COUNT=${1:-5}
+LOG_FILE="runs/auth_many_server.log"
+TIMEOUT=10  # 秒
+REPO_DIR="./"
 
 SERVER_COUNT=${#SERVERS[@]}
 SERVER_ENDPOINTS=()
@@ -119,9 +123,7 @@ for entry in "${SERVERS[@]}"; do
   eval "$entry"
   SERVER_ENDPOINTS+=("${ip}:${port}")
 done
-
-# zsh の join 展開
-SERVER_ENDPOINTS_STR="${(j: :)SERVER_ENDPOINTS}"
+SERVER_ENDPOINTS_STR="${SERVER_ENDPOINTS[*]}"
 
 REMOTE_CMD_BASE="python3 base/auth-many-server/remote_server.py \
   --server-count ${SERVER_COUNT} \
@@ -129,158 +131,132 @@ REMOTE_CMD_BASE="python3 base/auth-many-server/remote_server.py \
   --server-endpoints ${SERVER_ENDPOINTS_STR} \
   --auth-file ${AUTH_JSON}"
 
-TARGET_LOG="^\[Server"
-TIMEOUT=10
-REPO_DIR="./"
-
-# ======== ログ設定 ========
-RUN_DIR="./runs"
-mkdir -p "${RUN_DIR}"
-MAIN_LOG="${RUN_DIR}/all_runs.log"
-: >| "${MAIN_LOG}"  # 上書き初期化（zshの強制上書き演算子）
-
-AVG_FILE="${RUN_DIR}/avg_lengths.txt"
-TOTALS_FILE="${RUN_DIR}/total_steps.txt"
-TIME_FILE="${RUN_DIR}/times.txt"
-SERVER_COUNTS_FILE="${RUN_DIR}/server_counts.txt"
-: >| "${AVG_FILE}"
-: >| "${TOTALS_FILE}"
-: >| "${TIME_FILE}"
-: >| "${SERVER_COUNTS_FILE}"
+TARGET_LOG="^\\[Server"
 
 # ======== クリーンアップ ========
 cleanup() {
-  echo ">>> [CLEANUP] 全サーバ停止中..." | tee -a "${MAIN_LOG}"
+  echo ">>> [CLEANUP] 実験終了検知。全サーバ停止中..."
   for entry in "${SERVERS[@]}"; do
     eval "$entry"
-    echo "  - ${host} 上のプロセスを停止します..." | tee -a "${MAIN_LOG}"
+    echo "  - ${host} 上のプロセスを停止します..."
     ssh -o ConnectTimeout=5 "$host" "pkill -f base/auth-many-server/remote_server.py || true" >/dev/null 2>&1 || true
   done
-  echo ">>> [CLEANUP] 完了" | tee -a "${MAIN_LOG}"
+  echo ">>> [CLEANUP] 完了。"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
 
 # ======== 認可テーブル生成 ========
-echo ">>> auth_by_start.json を再生成中..." | tee -a "${MAIN_LOG}"
-python3 base/auth-many-server/create_json_table.py "${EDGE_FILE}" -o "${AUTH_JSON}" --ng-ratio 0.0 | tee -a "${MAIN_LOG}"
+echo ">>> auth_by_start.json を再生成中..."
+python3 base/auth-many-server/create_json_table.py "${EDGE_FILE}" -o "${AUTH_JSON}" --ng-ratio 0.0
 
 # ======== サーバ起動 ========
 start_remote_server() {
   local host=$1 id=$2 ip=$3 port=$4
-  echo "=== [${host}] サーバ起動 (ID=${id}) ===" | tee -a "${MAIN_LOG}"
-
+  echo "=== [${host}] サーバ起動開始 (ID=${id}) ==="
   ssh "$host" bash -c "'
 set -euo pipefail
 cd ${REPO_DIR}
 ${REMOTE_CMD_BASE} --server-id ${id} --host ${ip} --port ${port} > remote_server.log 2>&1 &
 PID=\$!
-echo \"[INFO] auth remote_server.py started on ${host} (PID=\$PID)\"
+echo \"[INFO] remote_server.py started on ${host} (PID=\$PID)\"
 
-( tail -n0 -f remote_server.log & ) >/dev/null 2>&1 &
-TAIL_PID=\$!
-
-for ((i=0; i<${TIMEOUT}*2; i++)); do
-  if grep -q \"${TARGET_LOG}\" remote_server.log; then
-    echo \"[INFO] ${host}: ログ確認OK ([Server 行を検出])\"
-    kill \$TAIL_PID || true
-    exit 0
-  fi
-  sleep 0.5
-done
-
-echo \"[WARN] ${host}: タイムアウト (${TIMEOUT}s) 経過\"
-kill \$TAIL_PID || true
-exit 1
-'" | tee -a "${MAIN_LOG}"
+timeout ${TIMEOUT}s bash -c \"grep -m1 '${TARGET_LOG}' <(tail -f remote_server.log)\" \
+  && echo \"[INFO] ${host}: 起動確認OK\" || echo \"[WARN] ${host}: タイムアウト (${TIMEOUT}s)\"
+'"
 }
 
+# ======== コントローラ設定 ========
+CONTROLLER_CMD=(
+  python3 base/auth-many-server/controller.py
+  --servers "${SERVER_COUNT}"
+  --server-endpoints "${SERVER_ENDPOINTS[@]}"
+  --walks 10
+  --alpha 0.5
+  --start-node 1
+  --seed 42
+)
+
+# ======== 平均計算ユーティリティ ========
+calc_average() {
+  if (( $# == 0 )); then
+    echo "NaN"
+    return 0
+  fi
+  python3 - "$@" <<'PY'
+import sys
+vals = []
+for v in sys.argv[1:]:
+    try:
+        if v.strip():
+            vals.append(float(v))
+    except ValueError:
+        continue
+print(f"{(sum(vals)/len(vals)):.6f}" if vals else "NaN")
+PY
+}
+
+# ======== メイン処理 ========
 for entry in "${SERVERS[@]}"; do
   eval "$entry"
   start_remote_server "$host" "$id" "$ip" "$port" &
 done
-
-echo ">>> サーバ起動確認待機..." | tee -a "${MAIN_LOG}"
 wait
-echo "=== 全サーバ起動完了 ===" | tee -a "${MAIN_LOG}"
+echo "=== 全サーバ起動確認完了 ==="
 
-# ======== 繰り返し実行 ========
-echo ">>> controller を ${REPS} 回実行します..." | tee -a "${MAIN_LOG}"
+mkdir -p "$(dirname "${LOG_FILE}")"
+echo "=== AUTH MANY SERVER RUN START ===" > "${LOG_FILE}"
 
-for ((i=1; i<=REPS; i++)); do
-  print -n "\n========== Run ${i}/${REPS} 開始 ==========\n" | tee -a "${MAIN_LOG}"
-  START_TIME=$(date '+%Y-%m-%d %H:%M:%S')
-  echo "[${START_TIME}] Controller 実行開始" | tee -a "${MAIN_LOG"
+durations=()
+avg_lengths=()
+total_steps_list=()
+successful_runs=0
 
-  # controller 実行（server-endpoints は配列で渡す）
-  echo ">>> 実行コマンド: python3 base/auth-many-server/controller.py --servers ${SERVER_COUNT} --server-endpoints ${SERVER_ENDPOINTS_STR} --walks 10 --alpha 0.5 --start-node 1 --seed $((42 + i))" | tee -a "${MAIN_LOG}"
-  # zshの配列展開を利用して引数を渡す
-  CONTROLLER_CMD=(python3 base/auth-many-server/controller.py --servers "${SERVER_COUNT}")
-  for ep in "${SERVER_ENDPOINTS[@]}"; do
-    CONTROLLER_CMD+=(--server-endpoints "${ep}")
-  done
-  CONTROLLER_CMD+=(--walks 10 --alpha 0.5 --start-node 1 --seed $((42 + i)))
+for ((run=1; run<=RUN_COUNT; run++)); do
+  echo ">>> [RUN ${run}/${RUN_COUNT}] start: $(date '+%Y-%m-%d %H:%M:%S')" >> "${LOG_FILE}"
 
-  "${(j: :)CONTROLLER_CMD}" >>| "${MAIN_LOG}" 2>&1 || echo "!!! controller returned non-zero (run ${i})" | tee -a "${MAIN_LOG}"
+  run_output="$("${CONTROLLER_CMD[@]}" 2>&1)"
+  echo "${run_output}" >> "${LOG_FILE}"
 
-  END_TIME=$(date '+%Y-%m-%d %H:%M:%S')
-  echo "[${END_TIME}] Controller 実行終了" | tee -a "${MAIN_LOG}"
-  print -n "========== Run ${i} 終了 ==========\n\n" | tee -a "${MAIN_LOG}"
+  # ======== 結果抽出（シェルの grep/sed を使って堅牢にパース） ========
+  # 期待される行例:
+  # [Controller] Received 10 walks in 0.180s. Avg length: 1.700, total steps: 17
+  parsed_line=$(echo "${run_output}" | grep -Eo '\[Controller\] Received [0-9]+ walks in [0-9.]+s\. Avg length: [0-9.]+, total steps: [0-9]+' | tail -n1 || true)
 
-  # --- 結果抽出: MAIN_LOG の最新該当行を抜く ---
-  awk '/Average walk length:/ {val=$4} END{if(val) print val; else print "NaN"}' "${MAIN_LOG}" >>| "${AVG_FILE}" || echo "NaN" >>| "${AVG_FILE}"
-  awk '/Total steps taken:/ {val=$4} END{if(val) print val; else print "0"}' "${MAIN_LOG}" >>| "${TOTALS_FILE}" || echo "0" >>| "${TOTALS_FILE}"
-  awk '/Completed in:/ {val=$3} END{if(val) print val; else print "0"}' "${MAIN_LOG}" >>| "${TIME_FILE}" || echo "0" >>| "${TIME_FILE}"
+  if [[ -n "${parsed_line}" ]]; then
+    duration=$(echo "${parsed_line}" | sed -E 's/.* in ([0-9.]+)s.*/\1/')
+    avg_len=$(echo "${parsed_line}" | sed -E 's/.*Avg length: ([0-9.]+).*/\1/')
+    total_steps=$(echo "${parsed_line}" | sed -E 's/.*total steps: ([0-9]+).*/\1/')
 
-  # --- サーバ訪問数（最後に出た SERVER_COUNT 行を拾う） ---
-  grep -E 'Server [0-9]+:' "${MAIN_LOG}" | tail -n "${SERVER_COUNT}" >| "${RUN_DIR}/server_tmp.txt" || true
-  if [[ ! -s "${RUN_DIR}/server_tmp.txt" ]]; then
-    # fallback zeros
-    : >| "${RUN_DIR}/server_tmp.txt"
-    for ((k=0;k<SERVER_COUNT;k++)); do
-      printf "Server %d: 0\n" "${k}" >>| "${RUN_DIR}/server_tmp.txt"
-    done
+    # 配列へ追加（空でなければ）
+    [[ -n "${duration}"    ]] && durations+=("${duration}")
+    [[ -n "${avg_len}"     ]] && avg_lengths+=("${avg_len}")
+    [[ -n "${total_steps}" ]] && total_steps_list+=("${total_steps}")
+    ((successful_runs++))
+    echo ">>> [RUN ${run}] duration=${duration}s, avg_length=${avg_len}, total_steps=${total_steps}" >> "${LOG_FILE}"
+  else
+    echo ">>> [RUN ${run}] controller.py の結果を解析できませんでした（該当行が見つかりません）" >> "${LOG_FILE}"
   fi
-
-  awk -v n="${SERVER_COUNT}" '
-  BEGIN { for(i=0;i<n;i++) a[i]=0 }
-  {
-    for(j=1;j<=NF;j++){
-      if($j=="Server"){
-        sid=$(j+1); gsub(":", "", sid); count=$(j+2); a[sid]=count
-      }
-    }
-  }
-  END {
-    for(i=0;i<n;i++) printf "%s%s", (i==0?"":" "), a[i]
-    printf "\n"
-  }' "${RUN_DIR}/server_tmp.txt" >>| "${SERVER_COUNTS_FILE}" || true
+  echo "" >> "${LOG_FILE}"
 done
 
-# ======== 集計 ========
-echo ">>> 集計結果:" | tee -a "${MAIN_LOG}"
+# ======== 平均出力 ========
+durations=("${durations[@]:-}")
+avg_lengths=("${avg_lengths[@]:-}")
+total_steps_list=("${total_steps_list[@]:-}")
 
-echo -n "Average walk length 平均: " | tee -a "${MAIN_LOG}"
-awk '{s+=$1;n++}END{if(n) printf "%.6f\n", s/n; else print "NaN"}' "${AVG_FILE}" | tee -a "${MAIN_LOG}"
-
-echo -n "Total steps taken 平均: " | tee -a "${MAIN_LOG}"
-awk '{s+=$1;n++}END{if(n) printf "%.3f\n", s/n; else print "NaN"}' "${TOTALS_FILE}" | tee -a "${MAIN_LOG}"
-
-echo -n "Completed in 平均 (s): " | tee -a "${MAIN_LOG}"
-awk '{s+=$1;n++}END{if(n) printf "%.6f\n", s/n; else print "NaN"}' "${TIME_FILE}" | tee -a "${MAIN_LOG}"
-
-echo -n "Server visit counts 平均: " | tee -a "${MAIN_LOG}"
-awk '
 {
-  for(i=1;i<=NF;i++) sum[i]+=$i
-  rows++
-}
-END{
-  for(i=1;i<=length(sum);i++){
-    if(i>1) printf " ";
-    printf "%.3f", sum[i]/rows
-  }
-  printf "\n"
-}' "${SERVER_COUNTS_FILE}" | tee -a "${MAIN_LOG}"
+  echo "=== ローカルジョブ完了 (${successful_runs}/${RUN_COUNT} runs) ==="
+  if (( successful_runs > 0 )); then
+    avg_duration=$(calc_average "${durations[@]}")
+    avg_walk_length=$(calc_average "${avg_lengths[@]}")
+    avg_total_steps=$(calc_average "${total_steps_list[@]}")
 
-print -n "\n=== 全処理完了 ===\n" | tee -a "${MAIN_LOG}"
-echo "ログファイル: ${MAIN_LOG}"
+    echo ">>> 平均値 (成功した実行のみ)"
+    echo "    - duration: ${avg_duration}s"
+    echo "    - avg_length: ${avg_walk_length}"
+    echo "    - total_steps: ${avg_total_steps}"
+  else
+    echo ">>> 実行に成功した run がありませんでした"
+  fi
+  echo "=== AUTH MANY SERVER RUN END ==="
+} >> "${LOG_FILE}"
