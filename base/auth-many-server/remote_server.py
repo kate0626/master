@@ -12,8 +12,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
+from datetime import datetime, timezone
 
 NodeId = Union[int, str]
+
+"""
+    python3 base/auth-many-server/remote_server.py --edges ./dataset/Louvain/graph/karate.gr --server-count 2 --server-id 1 --host 10.58.60.6 --port 3000 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --auth-file base/auth-many-server/auth_by_start.json
+    python3 base/auth-many-server/remote_server.py --edges ./dataset/Louvain/graph/karate.gr --server-count 2 --server-id 1 --host 10.58.60.6 --port 3000 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --auth-file base/auth-many-server/auth_by_start.json
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -320,21 +326,6 @@ class PeerWalker:
             except Exception:
                 pass
 
-        # たぶんいらない
-        # if start_node is None or start_node not in self.auth_table:
-        #     reason = (
-        #         "no auth entry" if start_node in (None, "") else "invalid start node"
-        #     )
-        #     print(f"[Server {current_sid}] {reason} -> finish")
-        #     return {
-        #         "finished": True,
-        #         "path": path,
-        #         "servers": servers,
-        #         "hops_done": hops_done,
-        #         "denied": True,
-        #         "denied_reason": reason,
-        #     }
-        # ここまでいらない
         print(
             f"[Server {current_sid}] continue_from_state: start={start_node}, current={current_entity}, hops={hops_done}"
         )
@@ -541,6 +532,8 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             request_timeout=getattr(self.server, "request_timeout", 5.0),
             auth_table=getattr(self.server, "auth_table", None),
         )
+        start_ts = time.perf_counter()
+        print(start_ts)
         results = []
         for i in range(walks):
             rng = random.Random(seed if seed is None else (seed + i))
@@ -556,10 +549,11 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             res = walker.continue_from_state(initial_state)
             results.append(res)
             # time.sleep(0.01)
-
-        payload = {"walks": results}
+        duration = time.perf_counter() - start_ts
+        print(duration)
+        payload = {"walks": results, "duration": duration}
         print(
-            f"[Server {self.server.server_id}] finished /walk; returning {len(results)} walks"
+            f"[Server {self.server.server_id}] finished /walk in {duration:.3f}s; returning {len(results)} walks"
         )
         self._write_json(payload)
 

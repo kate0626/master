@@ -12,8 +12,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
+from datetime import datetime, timezone
 
 NodeId = Union[int, str]
+
+
+def now_iso() -> str:
+    """Timezone-aware ISO8601 timestamp for logging/metrics."""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +405,8 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             endpoints=endpoints,
             request_timeout=getattr(self.server, "request_timeout", 5.0),
         )
+        start_ts = time.perf_counter()
+        print("start time", start_ts)
         results = []
         for i in range(walks):
             rng = random.Random(seed if seed is None else (seed + i))
@@ -414,9 +422,13 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             results.append(res)
             # time.sleep(0.01)
 
-        payload = {"walks": results}
+        wall_end_epoch = time.time()
+        wall_end_iso = now_iso()
+        duration = time.perf_counter() - start_ts
+        print(duration)
+        payload = {"walks": results, "duration": duration}
         print(
-            f"[Server {self.server.server_id}] finished /walk; returning {len(results)} walks"
+            f"[Server {self.server.server_id}] finished /walk in {duration:.3f}s; returning {len(results)} walks"
         )
         self._write_json(payload)
 

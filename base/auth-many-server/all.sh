@@ -300,6 +300,7 @@ for walks in "${WALKS_LIST[@]}"; do
     avg_lengths=()
     total_steps_list=()
     successful_runs=0
+    remote_durations=()  
 
     for ((run=1; run<=RUN_COUNT; run++)); do
       echo ">>> [RUN ${run}/${RUN_COUNT}] start: $(date '+%Y-%m-%d %H:%M:%S')" >> "${LOG_FILE}"
@@ -318,16 +319,26 @@ for walks in "${WALKS_LIST[@]}"; do
       echo "${run_output}" >> "${LOG_FILE}"
 
       parsed_line=$(echo "${run_output}" | grep -Eo '\[Controller\] Received [0-9]+ walks in [0-9.]+s\. Avg length: [0-9.]+, total steps: [0-9]+' | tail -n1 || true)
+      inner_duration_line=$(echo "${run_output}" | grep -Eo 'duration[[:space:]]+[0-9.]+' | awk '{print $2}' | tail -n1)
+      
       if [[ -n "${parsed_line}" ]]; then
         duration=$(echo "${parsed_line}" | sed -E 's/.* in ([0-9.]+)s.*/\1/')
         avg_len=$(echo "${parsed_line}" | sed -E 's/.*Avg length: ([0-9.]+).*/\1/')
         total_steps=$(echo "${parsed_line}" | sed -E 's/.*total steps: ([0-9]+).*/\1/')
+        if [[ -n "${inner_duration_line}" ]]; then
+          inner_duration=$(echo "${inner_duration_line}" | awk '{print $1}')
+        else
+          inner_duration="NaN"
+        fi
 
         durations+=("${duration}")
         avg_lengths+=("${avg_len}")
         total_steps_list+=("${total_steps}")
+        remote_durations+=("${inner_duration}")
         ((successful_runs++))
-        echo ">>> [RUN ${run}] OK: duration=${duration}s, avg_len=${avg_len}, steps=${total_steps}" >> "${LOG_FILE}"
+        
+        # echo ">>> [RUN ${run}] OK: duration=${duration}s, avg_len=${avg_len}, steps=${total_steps}" >> "${LOG_FILE}"
+        echo ">>> [RUN ${run}] OK: dur=${duration}s, remote_dur=${remote_durations}s, len=${avg_len}, steps=${total_steps}" >> "${LOG_FILE}"
       else
         echo ">>> [RUN ${run}] controller.py の結果を解析できませんでした" >> "${LOG_FILE}"
       fi
@@ -341,8 +352,10 @@ for walks in "${WALKS_LIST[@]}"; do
         avg_duration=$(calc_average "${durations[@]}")
         avg_walk_length=$(calc_average "${avg_lengths[@]}")
         avg_total_steps=$(calc_average "${total_steps_list[@]}")
+        avg_remote_duration=$(calc_average "${remote_durations[@]:-}")
         echo ">>> 平均値 (${successful_runs}/${RUN_COUNT})"
         echo "    - duration: ${avg_duration}s"
+        echo "    - remote_duration: ${avg_remote_duration}s"
         echo "    - avg_length: ${avg_walk_length}"
         echo "    - total_steps: ${avg_total_steps}"
       else
