@@ -57,6 +57,28 @@ def start_walk_on_server(endpoint: str, payload: dict, timeout: float) -> dict:
         return json.loads(resp.read())
 
 
+# === 追加ここから ===
+def fetch_access_stats(endpoint: str, timeout: float) -> Optional[dict]:
+    """
+    各リモートサーバのアクセス統計（access_stats_serverX.json）を
+    HTTP経由で取得するための補助関数。
+
+    ※ リモートサーバ側で /access_stats GET を追加している前提。
+      もし /access_stats が未実装なら、この関数は失敗し、
+      各サーバのJSONを手動で統合する運用でも問題ありません。
+    """
+    url = f"http://{endpoint.rstrip('/')}/access_stats"
+    try:
+        with urllib_request.urlopen(url, timeout=timeout) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        print(f"[Controller] Failed to fetch stats from {endpoint}: {e}")
+        return None
+
+
+# === 追加ここまで ===
+
+
 def main() -> None:
     args = parse_arguments()
     # TODO: スタートノードのあるサーバからの開始になっているか確認
@@ -107,6 +129,36 @@ def main() -> None:
     for i, w in enumerate(walks):
         print(f"Walk[{i}] path: {w.get('path')}")
         print(f"Walk[{i}] servers: {w.get('servers')}")
+
+    # === 追加ここから ===
+    # 各サーバのアクセス統計を取得し、統合する
+    print("\n[Controller] Collecting access statistics from all servers...")
+    global_access = defaultdict(int)
+    global_authorized = defaultdict(int)
+    global_transition = defaultdict(int)
+
+    for sid, endpoint in enumerate(args.server_endpoints):
+        stats = fetch_access_stats(endpoint, timeout=args.request_timeout)
+        if not stats:
+            continue
+        print(f"[Controller] Merging stats from server {sid} ({endpoint})")
+        for k, v in stats.get("access", {}).items():
+            global_access[k] += v
+        for k, v in stats.get("authorized", {}).items():
+            global_authorized[k] += v
+        for k, v in stats.get("transition", {}).items():
+            global_transition[k] += v
+
+    # 結果をファイル保存
+    out = {
+        "access": dict(global_access),
+        "authorized": dict(global_authorized),
+        "transition": dict(global_transition),
+    }
+    out_path = Path("global_transition.json")
+    out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
+    print(f"[Controller] Saved aggregated transition stats to {out_path}")
+    # === 追加ここまで ===
 
 
 if __name__ == "__main__":

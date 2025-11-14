@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
-from datetime import datetime, timezone
+import atexit  # ← 追加
+from collections import Counter  # ← 追加
 
 NodeId = Union[int, str]
 
@@ -252,6 +253,7 @@ class PeerWalker:
         request_timeout: float = 5.0,
         max_hops: int = 100000,
         auth_table: Optional[Dict[int, Dict[str, Set[str]]]] = None,
+        stats_collector: Optional[Any] = None,
     ):
         self.shard = shard
         self.endpoints = [
@@ -261,6 +263,12 @@ class PeerWalker:
         self.request_timeout = request_timeout
         self.max_hops = max_hops
         self.auth_table = auth_table or {}
+        self.stats_collector = stats_collector
+
+        # === 認可統計の初期化 ===
+        self.access_counter = Counter()  # どのエンティティにアクセスしたか
+        self.authorized_counter = Counter()  # 認可を通過したもの
+        self.transition_counter = Counter()  # from→to の遷移
 
     # --- 認可判定 ---
     def _is_allowed_entity(self, start_node: int, entity: Any) -> bool:
@@ -312,6 +320,8 @@ class PeerWalker:
         servers = list(state["servers"])
         alpha = float(state["alpha"])
         hops_done = int(state.get("hops_done", 0))
+        # 現在位置を訪問済みとして記録
+        self._record_entity_visit(current_entity)
 
         # --- start_node 確定 ---
         start_node = None
@@ -368,6 +378,29 @@ class PeerWalker:
             # --- 認可を考慮したランダム選択 ---
             max_retries = len(neighbors)
             next_choice = None
+            # === ここから追加: アクセス・認可・遷移カウンタ ===
+            for attempt in range(max_retries):
+                # 乱数で選ぶ
+                candidate = rng.choice(neighbors)
+                cid = candidate["node_id"]
+                print(
+                    f"[Server {current_sid}] Attempt {attempt+1}/{max_retries}: candidate={cid}"
+                )
+                # ランダムに選んだものが許可されているか
+                if self._is_allowed_entity(start_node, cid):
+                    print(f"[Server {current_sid}] Authorized → move to {cid}")
+                    next_choice = candidate
+                    # 認可成功したエンティティをカウント
+                    self._bump_server_counter("authorized_counter", cid)
+                    # 遷移関係（from→to）も記録
+                    self._bump_server_counter(
+                        "transition_counter", f"{current_entity}->{cid}"
+                    )
+                    break
+                else:
+                    print(f"[Server {current_sid}] Not authorized → retry")
+            # === ここまで追加 ===
+
             # 認可が失敗しても繰り返すforループ
             for attempt in range(max_retries):
                 # 乱数で選ぶ
@@ -401,6 +434,8 @@ class PeerWalker:
             # --- 移動処理 ---
             next_entity = next_choice["node_id"]
             next_server = int(next_choice["server_id"])
+            # 実際に訪問したエンティティのみ記録
+            self._record_entity_visit(next_entity)
             print(
                 f"[Server {current_sid}] hop {hops_done}: {current_entity} -> {next_entity} (server {next_server})"
             )
@@ -438,6 +473,19 @@ class PeerWalker:
             "hops_done": hops_done,
         }
 
+    def _bump_server_counter(self, attr: str, key: Any) -> None:
+        """Safely increment shared counters if the server exposed them."""
+        if self.stats_collector is None:
+            return
+        counter = getattr(self.stats_collector, attr, None)
+        if counter is None:
+            return
+        counter[key] += 1
+
+    def _record_entity_visit(self, entity_id: Any) -> None:
+        """Track only the entities that were actually part of the walk path."""
+        self._bump_server_counter("access_counter", entity_id)
+
 
 # ---------------------------------------------------------------------------
 # HTTP handlers
@@ -447,6 +495,14 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/health":
             self._write_json({"status": "ok", "server_id": self.server.server_id})
+            return
+        if parsed.path == "/access_stats":
+            payload = {
+                "access": dict(self.server.access_counter),
+                "authorized": dict(self.server.authorized_counter),
+                "transition": dict(self.server.transition_counter),
+            }
+            self._write_json(payload)
             return
 
         if parsed.path != "/neighbors":
@@ -531,6 +587,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             endpoints=endpoints,
             request_timeout=getattr(self.server, "request_timeout", 5.0),
             auth_table=getattr(self.server, "auth_table", None),
+            stats_collector=self.server,
         )
         start_ts = time.perf_counter()
         print(start_ts)
@@ -572,6 +629,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             endpoints=self.server.endpoints,
             request_timeout=getattr(self.server, "request_timeout", 5.0),
             auth_table=getattr(self.server, "auth_table", None),
+            stats_collector=self.server,
         )
         try:
             res = walker.continue_from_state(state)
@@ -621,6 +679,12 @@ class GraphShardServer(ThreadingHTTPServer):
         self.request_timeout = request_timeout
         # auth_table will be attached by main() if provided
         self.auth_table: Dict[int, Dict[str, Set[Any]]] = {}
+
+        # 認可およびアクセスの統計カウンタを初期化
+        self.access_counter = Counter()  # 各ノード・エッジへのアクセス回数
+        self.authorized_counter = Counter()  # 認可成功したノード・エッジ回数
+        self.transition_counter = Counter()  # 遷移 (from→to) のペア頻度
+        # === 追加ここまで ===
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -696,6 +760,18 @@ def main() -> None:
     print(
         f"[Server {server.server_id}] Serving {len(shard.local_entities)} entities (nodes + edges) on {args.host}:{args.port} / {args.server_count} servers"
     )
+
+    def dump_access_stats():
+        stats = {
+            "access": dict(server.access_counter),
+            "authorized": dict(server.authorized_counter),
+            "transition": dict(server.transition_counter),
+        }
+        out_path = Path(f"access_stats_server{server.server_id}.json")
+        out_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
+        print(f"[Server {server.server_id}] Access stats saved to {out_path}")
+
+    atexit.register(dump_access_stats)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
