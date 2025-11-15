@@ -314,7 +314,7 @@ class PeerWalker:
             loaded = deserialize_rng_state(rng_state_json)
             if loaded:
                 rng.setstate(loaded)
-        print(state["current_node"])
+        # print(state["current_node"])
         current_entity = state["current_node"]
         path = list(state["path"])
         servers = list(state["servers"])
@@ -336,9 +336,9 @@ class PeerWalker:
             except Exception:
                 pass
 
-        print(
-            f"[Server {current_sid}] continue_from_state: start={start_node}, current={current_entity}, hops={hops_done}"
-        )
+        # print(
+        #     f"[Server {current_sid}] continue_from_state: start={start_node}, current={current_entity}, hops={hops_done}"
+        # )
 
         # --- ランダムウォーク ---
         # 終了確率に達するまで行う
@@ -348,9 +348,9 @@ class PeerWalker:
             # 所有サーバ確認
             owner = self.shard.partitioner.assign_entity(current_entity)
             if owner != current_sid:
-                print(
-                    f"[Server {current_sid}] entity {current_entity} not local (owner={owner}) → delegate"
-                )
+                # print(
+                #     f"[Server {current_sid}] entity {current_entity} not local (owner={owner}) → delegate"
+                # )
                 state_out = {
                     "start_node": start_node,
                     "current_node": current_entity,
@@ -382,13 +382,15 @@ class PeerWalker:
             for attempt in range(max_retries):
                 # 乱数で選ぶ
                 candidate = rng.choice(neighbors)
+                print("候補", candidate)
                 cid = candidate["node_id"]
-                print(
-                    f"[Server {current_sid}] Attempt {attempt+1}/{max_retries}: candidate={cid}"
-                )
+                print(self._is_allowed_entity(start_node, cid))
+                # print(
+                #     f"[Server {current_sid}] Attempt {attempt+1}/{max_retries}: candidate={cid}"
+                # )
                 # ランダムに選んだものが許可されているか
                 if self._is_allowed_entity(start_node, cid):
-                    print(f"[Server {current_sid}] Authorized → move to {cid}")
+                    # print(f"[Server {current_sid}] Authorized → move to {cid}")
                     next_choice = candidate
                     # 認可成功したエンティティをカウント
                     self._bump_server_counter("authorized_counter", cid)
@@ -406,12 +408,12 @@ class PeerWalker:
                 # 乱数で選ぶ
                 candidate = rng.choice(neighbors)
                 cid = candidate["node_id"]
-                print(
-                    f"[Server {current_sid}] Attempt {attempt+1}/{max_retries}: candidate={cid}"
-                )
+                # print(
+                #     f"[Server {current_sid}] Attempt {attempt+1}/{max_retries}: candidate={cid}"
+                # )
                 # ランダムに選んだものが許可されているか
                 if self._is_allowed_entity(start_node, cid):
-                    print(f"[Server {current_sid}] Authorized → move to {cid}")
+                    # print(f"[Server {current_sid}] Authorized → move to {cid}")
                     next_choice = candidate
                     break
                 # 許可されていない場合は指定回数だけ再試行
@@ -436,9 +438,9 @@ class PeerWalker:
             next_server = int(next_choice["server_id"])
             # 実際に訪問したエンティティのみ記録
             self._record_entity_visit(next_entity)
-            print(
-                f"[Server {current_sid}] hop {hops_done}: {current_entity} -> {next_entity} (server {next_server})"
-            )
+            # print(
+            #     f"[Server {current_sid}] hop {hops_done}: {current_entity} -> {next_entity} (server {next_server})"
+            # )
 
             path.append(next_entity)
             servers.append(next_server)
@@ -455,9 +457,9 @@ class PeerWalker:
                     "rng_state": serialize_rng_state(rng),
                     "hops_done": hops_done,
                 }
-                print(
-                    f"[Server {current_sid}] delegating walk to server {next_server} (entity={current_entity})"
-                )
+                # print(
+                #     f"[Server {current_sid}] delegating walk to server {next_server} (entity={current_entity})"
+                # )
                 return self._post_continue(next_server, state_out)
 
         # --- 終了条件処理 ---
@@ -527,9 +529,9 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-        print(
-            f"[Server {self.server.server_id}] neighbor request for entity {entity} from {self.client_address}"
-        )
+        # print(
+        #     f"[Server {self.server.server_id}] neighbor request for entity {entity} from {self.client_address}"
+        # )
 
         neighbors = self.server.shard.get_neighbors(entity)
         if neighbors is None:
@@ -590,7 +592,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             stats_collector=self.server,
         )
         start_ts = time.perf_counter()
-        print(start_ts)
+        # print(start_ts)
         results = []
         for i in range(walks):
             rng = random.Random(seed if seed is None else (seed + i))
@@ -607,7 +609,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             results.append(res)
             # time.sleep(0.01)
         duration = time.perf_counter() - start_ts
-        print(duration)
+        # print(duration)
         payload = {"walks": results, "duration": duration}
         print(
             f"[Server {self.server.server_id}] finished /walk in {duration:.3f}s; returning {len(results)} walks"
@@ -621,9 +623,9 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         if state is None:
             return
 
-        print(
-            f"[Server {self.server.server_id}] /continue_walk from {self.client_address} hops_done={state.get('hops_done', 0)}"
-        )
+        # print(
+        #     f"[Server {self.server.server_id}] /continue_walk from {self.client_address} hops_done={state.get('hops_done', 0)}"
+        # )
         walker = PeerWalker(
             self.server.shard,
             endpoints=self.server.endpoints,
@@ -757,9 +759,9 @@ def main() -> None:
         auth_table = load_entity_auth_table(Path(args.auth_file))
         server.auth_table = auth_table
 
-    print(
-        f"[Server {server.server_id}] Serving {len(shard.local_entities)} entities (nodes + edges) on {args.host}:{args.port} / {args.server_count} servers"
-    )
+    # print(
+    #     f"[Server {server.server_id}] Serving {len(shard.local_entities)} entities (nodes + edges) on {args.host}:{args.port} / {args.server_count} servers"
+    # )
 
     def dump_access_stats():
         stats = {
@@ -769,7 +771,7 @@ def main() -> None:
         }
         out_path = Path(f"access_stats_server{server.server_id}.json")
         out_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
-        print(f"[Server {server.server_id}] Access stats saved to {out_path}")
+        # print(f"[Server {server.server_id}] Access stats saved to {out_path}")
 
     atexit.register(dump_access_stats)
     try:

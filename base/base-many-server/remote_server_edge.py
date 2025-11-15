@@ -238,18 +238,18 @@ class PeerWalker:
         alpha = float(state["alpha"])
         hops_done = int(state.get("hops_done", 0))
 
-        print(
-            f"[Server {current_sid}] continue_from_state: start entity={current_entity} hops_done={hops_done}"
-        )
+        # print(
+        #     f"[Server {current_sid}] continue_from_state: start entity={current_entity} hops_done={hops_done}"
+        # )
         # 終了確率より大きかったら継続
         while hops_done < self.max_hops and rng.random() > alpha:
             hops_done += 1
             owner = self.shard.partitioner.assign_entity(current_entity)
             # 次のエンティティが別サーバの場合
             if owner != current_sid:
-                print(
-                    f"[Server {current_sid}] entity {current_entity} not local (owner={owner}) → delegate"
-                )
+                # print(
+                #     f"[Server {current_sid}] entity {current_entity} not local (owner={owner}) → delegate"
+                # )
                 state_out = {
                     "current_node": current_entity,
                     "path": path,
@@ -264,9 +264,9 @@ class PeerWalker:
             # 次のエンティティが同じサーバだった時
             neighbors = self._get_local_neighbors(current_entity)
             if not neighbors:
-                print(
-                    f"[Server {current_sid}] entity {current_entity} has no neighbors → finish"
-                )
+                # print(
+                #     f"[Server {current_sid}] entity {current_entity} has no neighbors → finish"
+                # )
                 return {
                     "finished": True,
                     "path": path,
@@ -277,9 +277,9 @@ class PeerWalker:
             next_choice = rng.choice(neighbors)
             next_entity: NodeId = next_choice["node_id"]
             next_server = int(next_choice["server_id"])
-            print(
-                f"[Server {current_sid}] hop {hops_done}: {current_entity} -> {next_entity} (server {next_server})"
-            )
+            # print(
+            #     f"[Server {current_sid}] hop {hops_done}: {current_entity} -> {next_entity} (server {next_server})"
+            # )
 
             path.append(next_entity)
             servers.append(next_server)
@@ -294,9 +294,9 @@ class PeerWalker:
                     "rng_state": serialize_rng_state(rng),
                     "hops_done": hops_done,
                 }
-                print(
-                    f"[Server {current_sid}] delegating walk to server {next_server} (entity={current_entity})"
-                )
+                # print(
+                #     f"[Server {current_sid}] delegating walk to server {next_server} (entity={current_entity})"
+                # )
                 return self._post_continue(next_server, state_out)
 
         if hops_done >= self.max_hops:
@@ -345,9 +345,9 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-        print(
-            f"[Server {self.server.server_id}] neighbor request for entity {entity} from {self.client_address}"
-        )
+        # print(
+        #     f"[Server {self.server.server_id}] neighbor request for entity {entity} from {self.client_address}"
+        # )
 
         neighbors = self.server.shard.get_neighbors(entity)
         if neighbors is None:
@@ -406,8 +406,9 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             request_timeout=getattr(self.server, "request_timeout", 5.0),
         )
         start_ts = time.perf_counter()
-        print("start time", start_ts)
+        # print("start time", start_ts)
         results = []
+        # 指定回数のRWがの反復が開始
         for i in range(walks):
             rng = random.Random(seed if seed is None else (seed + i))
             initial_state = {
@@ -425,7 +426,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         wall_end_epoch = time.time()
         wall_end_iso = now_iso()
         duration = time.perf_counter() - start_ts
-        print(duration)
+        # print(duration)
         payload = {"walks": results, "duration": duration}
         print(
             f"[Server {self.server.server_id}] finished /walk in {duration:.3f}s; returning {len(results)} walks"
@@ -439,9 +440,9 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         if state is None:
             return
 
-        print(
-            f"[Server {self.server.server_id}] /continue_walk from {self.client_address} hops_done={state.get('hops_done', 0)}"
-        )
+        # print(
+        #     f"[Server {self.server.server_id}] /continue_walk from {self.client_address} hops_done={state.get('hops_done', 0)}"
+        # )
         walker = PeerWalker(
             self.server.shard,
             endpoints=self.server.endpoints,

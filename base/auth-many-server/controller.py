@@ -10,7 +10,7 @@ from typing import List, Optional
 from urllib import request as urllib_request
 
 """
-    python3 base/auth-many-server/controller.py --servers 2 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --start-node 1 --walks 3 --alpha 0.5 --seed 42
+    python3 base/auth-many-server/controller.py --servers 2 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --start-node 1 --walks 100 --alpha 0.1 --seed 42
 """
 
 
@@ -150,12 +150,13 @@ def main() -> None:
             global_transition[k] += v
 
     # 結果をファイル保存
+    output_filename = f"{args.walks}_{args.alpha}_global_transition.json"
     out = {
         "access": dict(global_access),
         "authorized": dict(global_authorized),
         "transition": dict(global_transition),
     }
-    out_path = Path("global_transition.json")
+    out_path = Path(output_filename)
     out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
     print(f"[Controller] Saved aggregated transition stats to {out_path}")
     # === 追加ここまで ===
