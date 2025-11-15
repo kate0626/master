@@ -3,6 +3,7 @@ set -euo pipefail
 
 ############################################################
 #  実験設定パート（全変数をここに集約）
+#  python ./base/base-many-server/all.sh
 ############################################################
 
 ## --- 実行モードと回数 ---
@@ -24,8 +25,8 @@ SERVERS=(
 )
 
 ## --- コントローラパラメータ ---
-WALKS_LIST=(10 50)
-ALPHA_LIST=(0.3)
+WALKS_LIST=(100)
+ALPHA_LIST=(0.04 0.03 0.02)
 START_NODE=1
 
 ## --- スクリプト名切り替え ---
@@ -122,7 +123,7 @@ for walks in "${WALKS_LIST[@]}"; do
   for alpha in "${ALPHA_LIST[@]}"; do
     echo ""
     echo "=== [PARAM SET] walks=${walks}, alpha=${alpha} ==="
-    LOG_FILE="${RUNS_DIR}/${LOG_PREFIX}_walks${walks}_alpha${alpha}.log"
+    LOG_FILE="$./base/{RUNS_DIR}/${LOG_PREFIX}_walks${walks}_alpha${alpha}.log"
     echo "=== RUN START: walks=${walks}, alpha=${alpha} ===" > "${LOG_FILE}"
 
     durations=()
