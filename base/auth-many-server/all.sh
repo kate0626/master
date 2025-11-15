@@ -16,6 +16,7 @@ EDGE_FILE="dataset/Louvain/graph/karate.gr"
 AUTH_JSON="base/auth-many-server/auth_by_start.json"
 REPO_DIR="./"
 RUNS_DIR="runs"
+LOG_DIR="${RUNS_DIR}/auth"
 
 ## --- サーバ設定 ---
 SERVERS=(
@@ -26,7 +27,8 @@ SERVERS=(
 ## --- スイープパラメータ設定 ---
 # ここを変えるだけで一括実験条件が変わる！
 WALKS_LIST=(100)
-ALPHA_LIST=(0.04 0.03 0.02)
+ALPHA_LIST=(0.01)
+NG_RATIO_LIST=(0.0 1.0)
 START_NODE=1                      # RWの開始ノード
 DEFAULT_WALKS=10                  # 参考値（controller.pyのデフォルト想定）
 
@@ -78,6 +80,19 @@ timeout ${TIMEOUT}s bash -c \"grep -m1 '${TARGET_LOG}' <(tail -f remote_server.l
 '"
 }
 
+# --- リモートで認可テーブル生成 ---
+generate_remote_auth_table() {
+  local host=$1 ratio=$2
+  echo ">>> [${host}] auth_by_start.json を生成中 (ng_ratio=${ratio})..."
+  local repo_dir_q edge_file_q auth_json_q ratio_q
+  printf -v repo_dir_q '%q' "${REPO_DIR}"
+  printf -v edge_file_q '%q' "${EDGE_FILE}"
+  printf -v auth_json_q '%q' "${AUTH_JSON}"
+  printf -v ratio_q '%q' "${ratio}"
+  local remote_cmd="set -euo pipefail; cd ${repo_dir_q}; python3 base/auth-many-server/create_json_table.py ${edge_file_q} -o ${auth_json_q} --ng-ratio ${ratio_q}"
+  ssh "$host" bash -lc "${remote_cmd}"
+}
+
 # --- 平均計算 ---
 calc_average() {
   if (( $# == 0 )); then
@@ -95,96 +110,104 @@ PY
 #  実験実行パート
 ############################################################
 
-# 認可テーブルを再生成
-echo ">>> auth_by_start.json を再生成中..."
-python3 base/auth-many-server/create_json_table.py "${EDGE_FILE}" -o "${AUTH_JSON}" --ng-ratio 0.0
-
-# サーバ起動
-for entry in "${SERVERS[@]}"; do
-  eval "$entry"
-  start_remote_server "$host" "$id" "$ip" "$port" &
-done
-wait
-echo "=== 全サーバ起動完了 ==="
-
-mkdir -p "${RUNS_DIR}"
+mkdir -p "${LOG_DIR}"
 
 # --- パラメータスイープ ---
-for walks in "${WALKS_LIST[@]}"; do
-  for alpha in "${ALPHA_LIST[@]}"; do
-    echo ""
-    echo "=== [PARAM SET] walks=${walks}, alpha=${alpha} ==="
-    LOG_FILE="$./auth/{RUNS_DIR}/result_walks${walks}_alpha${alpha}.log"
-    echo "=== RUN START: walks=${walks}, alpha=${alpha} ===" > "${LOG_FILE}"
-
-    durations=()
-    avg_lengths=()
-    total_steps_list=()
-    successful_runs=0
-    remote_durations=()  
-
-    for ((run=1; run<=RUN_COUNT; run++)); do
-      echo ">>> [RUN ${run}/${RUN_COUNT}] start: $(date '+%Y-%m-%d %H:%M:%S')" >> "${LOG_FILE}"
-
-      CONTROLLER_CMD=(
-        python3 base/auth-many-server/controller.py
-        --servers "${SERVER_COUNT}"
-        --server-endpoints "${SERVER_ENDPOINTS[@]}"
-        --walks "${walks}"
-        --alpha "${alpha}"
-        --start-node "${START_NODE}"
-        --seed $((SEED_BASE + run))
-      )
-
-      run_output="$("${CONTROLLER_CMD[@]}" 2>&1)"
-      echo "${run_output}" >> "${LOG_FILE}"
-
-      parsed_line=$(echo "${run_output}" | grep -Eo '\[Controller\] Received [0-9]+ walks in [0-9.]+s\. Avg length: [0-9.]+, total steps: [0-9]+' | tail -n1 || true)
-      inner_duration_line=$(echo "${run_output}" | grep -Eo 'duration[[:space:]]+[0-9.]+' | awk '{print $2}' | tail -n1)
-      
-      if [[ -n "${parsed_line}" ]]; then
-        duration=$(echo "${parsed_line}" | sed -E 's/.* in ([0-9.]+)s.*/\1/')
-        avg_len=$(echo "${parsed_line}" | sed -E 's/.*Avg length: ([0-9.]+).*/\1/')
-        total_steps=$(echo "${parsed_line}" | sed -E 's/.*total steps: ([0-9]+).*/\1/')
-        if [[ -n "${inner_duration_line}" ]]; then
-          inner_duration=$(echo "${inner_duration_line}" | awk '{print $1}')
-        else
-          inner_duration="NaN"
-        fi
-
-        durations+=("${duration}")
-        avg_lengths+=("${avg_len}")
-        total_steps_list+=("${total_steps}")
-        remote_durations+=("${inner_duration}")
-        ((successful_runs++))
-        
-        # echo ">>> [RUN ${run}] OK: duration=${duration}s, avg_len=${avg_len}, steps=${total_steps}" >> "${LOG_FILE}"
-        echo ">>> [RUN ${run}] OK: dur=${duration}s, remote_dur=${remote_durations}s, len=${avg_len}, steps=${total_steps}" >> "${LOG_FILE}"
-      else
-        echo ">>> [RUN ${run}] controller.py の結果を解析できませんでした" >> "${LOG_FILE}"
-      fi
-      echo "" >> "${LOG_FILE}"
-    done
-
-    # --- 平均出力 ---
-    {
-      echo "=== 結果集計 (walks=${walks}, alpha=${alpha}) ==="
-      if (( successful_runs > 0 )); then
-        avg_duration=$(calc_average "${durations[@]}")
-        avg_walk_length=$(calc_average "${avg_lengths[@]}")
-        avg_total_steps=$(calc_average "${total_steps_list[@]}")
-        avg_remote_duration=$(calc_average "${remote_durations[@]:-}")
-        echo ">>> 平均値 (${successful_runs}/${RUN_COUNT})"
-        echo "    - duration: ${avg_duration}s"
-        echo "    - remote_duration: ${avg_remote_duration}s"
-        echo "    - avg_length: ${avg_walk_length}"
-        echo "    - total_steps: ${avg_total_steps}"
-      else
-        echo ">>> 実行成功なし"
-      fi
-      echo "=== RUN END: walks=${walks}, alpha=${alpha} ==="
-    } >> "${LOG_FILE}"
-
-    echo "✅ 完了: walks=${walks}, alpha=${alpha} (ログ: ${LOG_FILE})"
+for ng_ratio in "${NG_RATIO_LIST[@]}"; do
+  echo ">>> 各サーバで auth_by_start.json を再生成中... (ng_ratio=${ng_ratio})"
+  for entry in "${SERVERS[@]}"; do
+    eval "$entry"
+    generate_remote_auth_table "$host" "${ng_ratio}"
   done
+
+  for entry in "${SERVERS[@]}"; do
+    eval "$entry"
+    start_remote_server "$host" "$id" "$ip" "$port" &
+  done
+  wait
+  echo "=== 全サーバ起動完了 (ng_ratio=${ng_ratio}) ==="
+
+  ng_ratio_label=${ng_ratio//./_}
+
+  for walks in "${WALKS_LIST[@]}"; do
+    for alpha in "${ALPHA_LIST[@]}"; do
+      echo ""
+      echo "=== [PARAM SET] ng_ratio=${ng_ratio}, walks=${walks}, alpha=${alpha} ==="
+      LOG_FILE="${LOG_DIR}/test/result_ng${ng_ratio_label}_walks${walks}_alpha${alpha}.log"
+      echo "=== RUN START: walks=${walks}, alpha=${alpha} ===" > "${LOG_FILE}"
+
+      durations=()
+      avg_lengths=()
+      total_steps_list=()
+      successful_runs=0
+      remote_durations=()  
+
+      for ((run=1; run<=RUN_COUNT; run++)); do
+        echo ">>> [RUN ${run}/${RUN_COUNT}] start: $(date '+%Y-%m-%d %H:%M:%S')" >> "${LOG_FILE}"
+
+        CONTROLLER_CMD=(
+          python3 base/auth-many-server/controller.py
+          --servers "${SERVER_COUNT}"
+          --server-endpoints "${SERVER_ENDPOINTS[@]}"
+          --walks "${walks}"
+          --alpha "${alpha}"
+          --start-node "${START_NODE}"
+          --seed $((SEED_BASE + run))
+        )
+
+        run_output="$("${CONTROLLER_CMD[@]}" 2>&1)"
+        echo "${run_output}" >> "${LOG_FILE}"
+
+        parsed_line=$(echo "${run_output}" | grep -Eo '\[Controller\] Received [0-9]+ walks in [0-9.]+s\. Avg length: [0-9.]+, total steps: [0-9]+' | tail -n1 || true)
+        inner_duration_line=$(echo "${run_output}" | grep -Eo 'duration[[:space:]]+[0-9.]+' | awk '{print $2}' | tail -n1)
+        
+        if [[ -n "${parsed_line}" ]]; then
+          duration=$(echo "${parsed_line}" | sed -E 's/.* in ([0-9.]+)s.*/\1/')
+          avg_len=$(echo "${parsed_line}" | sed -E 's/.*Avg length: ([0-9.]+).*/\1/')
+          total_steps=$(echo "${parsed_line}" | sed -E 's/.*total steps: ([0-9]+).*/\1/')
+          if [[ -n "${inner_duration_line}" ]]; then
+            inner_duration=$(echo "${inner_duration_line}" | awk '{print $1}')
+          else
+            inner_duration="NaN"
+          fi
+
+          durations+=("${duration}")
+          avg_lengths+=("${avg_len}")
+          total_steps_list+=("${total_steps}")
+          remote_durations+=("${inner_duration}")
+          # ((successful_runs++))
+          
+          # echo ">>> [RUN ${run}] OK: duration=${duration}s, avg_len=${avg_len}, steps=${total_steps}" >> "${LOG_FILE}"
+          echo ">>> [RUN ${run}] OK: dur=${duration}s, remote_dur=${remote_durations}s, len=${avg_len}, steps=${total_steps}" >> "${LOG_FILE}"
+        else
+          echo ">>> [RUN ${run}] controller.py の結果を解析できませんでした" >> "${LOG_FILE}"
+        fi
+        echo "" >> "${LOG_FILE}"
+      done
+
+      # --- 平均出力 ---
+      {
+        echo "=== 結果集計 (walks=${walks}, alpha=${alpha}) ==="
+        if (( successful_runs <10000 )); then
+          avg_duration=$(calc_average "${durations[@]}")
+          avg_walk_length=$(calc_average "${avg_lengths[@]}")
+          avg_total_steps=$(calc_average "${total_steps_list[@]}")
+          avg_remote_duration=$(calc_average "${remote_durations[@]:-}")
+          echo ">>> 平均値 (${successful_runs}/${RUN_COUNT})"
+          echo "    - duration: ${avg_duration}s"
+          echo "    - remote_duration: ${avg_remote_duration}s"
+          echo "    - avg_length: ${avg_walk_length}"
+          echo "    - total_steps: ${avg_total_steps}"
+        else
+          echo ">>> 実行成功なし"
+        fi
+        echo "=== RUN END: walks=${walks}, alpha=${alpha} ==="
+      } >> "${LOG_FILE}"
+
+      echo "✅ 完了: ng_ratio=${ng_ratio}, walks=${walks}, alpha=${alpha} (ログ: ${LOG_FILE})"
+    done
+  done
+
+  echo ">>> ng_ratio=${ng_ratio} の実行が完了しました。サーバを停止します。"
+  cleanup
 done

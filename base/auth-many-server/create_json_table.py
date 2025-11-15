@@ -2,6 +2,8 @@
 """generate_auth_from_edges.py with NG ratio option
 Usage:
 python3 scripts/generate_auth_from_edges.py edges.txt -o auth_by_start.json --ng-ratio 0.2
+
+python3 base/auth-many-server/create_json_table.py ./dataset/Louvain/graph/karate.gr -o auth_by_start.json --ng-ratio 0.0
 """
 from __future__ import annotations
 
@@ -33,6 +35,7 @@ def read_edge_list(path: Path) -> List[Tuple[int, int]]:
     return edges
 
 
+# 隣接ノードを全て入れる時を１とした場合のコード
 def build_auth_table(
     edges: List[Tuple[int, int]], ng_ratio: float = 0.0
 ) -> Dict[str, Dict[str, List]]:
@@ -65,6 +68,53 @@ def build_auth_table(
     for node in all_nodes:
         by_start[node]["n"].add(node)
 
+    out = {}
+    for start, sets in by_start.items():
+        ns = sorted(int(x) for x in sets["n"])
+        es = sorted(str(x) for x in sets["e"])
+        out[str(start)] = {"n": ns, "e": es}
+    return out
+
+
+"""
+    隣接関係なく許可不許可を決めるのは、始点ノード
+    つまり、始点ノードからた時には全てのノードへのアクセスが許可されている状態を１とする
+"""
+
+
+def build_auth_table(
+    edges: List[Tuple[int, int]], ng_ratio: float = 0.0
+) -> Dict[str, Dict[str, List]]:
+    """
+    Build mapping: start_node_int -> {"n": [nodes], "e": [edge_ids]}
+    - ng_ratio=0.0 → 自分以外の全ノード・全エッジを許可
+    - ng_ratio>0.0 → ランダムに一部除外
+    """
+    by_start = defaultdict(lambda: {"n": set(), "e": set()})
+    all_nodes: Set[int] = set()
+    all_edges: Set[str] = set()
+
+    # 全ノード・エッジ集合を作る
+    for u, v in edges:
+        all_nodes.update([u, v])
+        all_edges.add(make_edge_id(u, v))
+
+    # 各ノードについて許可リストを作成
+    for start in all_nodes:
+        # --- ノード認可リスト ---
+        for node in all_nodes:
+            if node == start:
+                continue
+            if random.random() >= ng_ratio:
+                by_start[start]["n"].add(node)
+        # --- エッジ認可リスト ---
+        for edge_id in all_edges:
+            if random.random() >= ng_ratio:
+                by_start[start]["e"].add(edge_id)
+        # 自分自身は常に含める
+        by_start[start]["n"].add(start)
+
+    # 出力整形
     out = {}
     for start, sets in by_start.items():
         ns = sorted(int(x) for x in sets["n"])

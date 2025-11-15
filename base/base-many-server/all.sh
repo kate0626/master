@@ -123,7 +123,7 @@ for walks in "${WALKS_LIST[@]}"; do
   for alpha in "${ALPHA_LIST[@]}"; do
     echo ""
     echo "=== [PARAM SET] walks=${walks}, alpha=${alpha} ==="
-    LOG_FILE="$./base/{RUNS_DIR}/${LOG_PREFIX}_walks${walks}_alpha${alpha}.log"
+    LOG_FILE="${RUNS_DIR}/base/${LOG_PREFIX}_walks${walks}_alpha${alpha}.log"
     echo "=== RUN START: walks=${walks}, alpha=${alpha} ===" > "${LOG_FILE}"
 
     durations=()
