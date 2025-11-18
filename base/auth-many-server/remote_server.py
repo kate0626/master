@@ -381,10 +381,9 @@ class PeerWalker:
             # === ここから追加: アクセス・認可・遷移カウンタ ===
             for attempt in range(max_retries):
                 # 乱数で選ぶ
+                self._record_authorization_attempt(current_entity)
                 candidate = rng.choice(neighbors)
-                print("候補", candidate)
                 cid = candidate["node_id"]
-                print(self._is_allowed_entity(start_node, cid))
                 # print(
                 #     f"[Server {current_sid}] Attempt {attempt+1}/{max_retries}: candidate={cid}"
                 # )
@@ -394,31 +393,9 @@ class PeerWalker:
                     next_choice = candidate
                     # 認可成功したエンティティをカウント
                     self._bump_server_counter("authorized_counter", cid)
-                    # 遷移関係（from→to）も記録
-                    self._bump_server_counter(
-                        "transition_counter", f"{current_entity}->{cid}"
-                    )
+                    self._record_authorization_success(current_entity, cid)
                     break
-                else:
-                    print(f"[Server {current_sid}] Not authorized → retry")
-            # === ここまで追加 ===
-
-            # 認可が失敗しても繰り返すforループ
-            for attempt in range(max_retries):
-                # 乱数で選ぶ
-                candidate = rng.choice(neighbors)
-                cid = candidate["node_id"]
-                # print(
-                #     f"[Server {current_sid}] Attempt {attempt+1}/{max_retries}: candidate={cid}"
-                # )
-                # ランダムに選んだものが許可されているか
-                if self._is_allowed_entity(start_node, cid):
-                    # print(f"[Server {current_sid}] Authorized → move to {cid}")
-                    next_choice = candidate
-                    break
-                # 許可されていない場合は指定回数だけ再試行
-                else:
-                    print(f"[Server {current_sid}] Not authorized → retry")
+                self._record_authorization_denial(current_entity)
 
             if next_choice is None:
                 print(
@@ -488,6 +465,19 @@ class PeerWalker:
         """Track only the entities that were actually part of the walk path."""
         self._bump_server_counter("access_counter", entity_id)
 
+    def _record_authorization_attempt(self, source: Any) -> None:
+        """Track how many times we tried leaving each entity."""
+        self._bump_server_counter("authorization_attempt_counter", source)
+
+    def _record_authorization_success(self, current: Any, target: Any) -> None:
+        """Track successful authorizations and resulting transitions."""
+        self._bump_server_counter("authorized_counter", target)
+        self._bump_server_counter("transition_counter", f"{current}->{target}")
+
+    def _record_authorization_denial(self, source: Any) -> None:
+        """Track failed attempts at leaving an entity."""
+        self._bump_server_counter("authorization_denied_counter", source)
+
 
 # ---------------------------------------------------------------------------
 # HTTP handlers
@@ -502,6 +492,10 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             payload = {
                 "access": dict(self.server.access_counter),
                 "authorized": dict(self.server.authorized_counter),
+                "authorization_attempts": dict(
+                    self.server.authorization_attempt_counter
+                ),
+                "authorization_denied": dict(self.server.authorization_denied_counter),
                 "transition": dict(self.server.transition_counter),
             }
             self._write_json(payload)
@@ -685,6 +679,8 @@ class GraphShardServer(ThreadingHTTPServer):
         # 認可およびアクセスの統計カウンタを初期化
         self.access_counter = Counter()  # 各ノード・エッジへのアクセス回数
         self.authorized_counter = Counter()  # 認可成功したノード・エッジ回数
+        self.authorization_attempt_counter = Counter()  # 認可試行回数
+        self.authorization_denied_counter = Counter()  # 認可失敗回数
         self.transition_counter = Counter()  # 遷移 (from→to) のペア頻度
         # === 追加ここまで ===
 
@@ -767,6 +763,8 @@ def main() -> None:
         stats = {
             "access": dict(server.access_counter),
             "authorized": dict(server.authorized_counter),
+            "authorization_attempts": dict(server.authorization_attempt_counter),
+            "authorization_denied": dict(server.authorization_denied_counter),
             "transition": dict(server.transition_counter),
         }
         out_path = Path(f"access_stats_server{server.server_id}.json")

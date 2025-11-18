@@ -36,7 +36,7 @@ def read_edge_list(path: Path) -> List[Tuple[int, int]]:
 
 
 # 隣接ノードを全て入れる時を１とした場合のコード
-def build_auth_table(
+def build_auth_table1(
     edges: List[Tuple[int, int]], ng_ratio: float = 0.0
 ) -> Dict[str, Dict[str, List]]:
     """
@@ -82,7 +82,7 @@ def build_auth_table(
 """
 
 
-def build_auth_table(
+def build_auth_table2(
     edges: List[Tuple[int, int]], ng_ratio: float = 0.0
 ) -> Dict[str, Dict[str, List]]:
     """
@@ -129,7 +129,11 @@ def main():
     )
     p.add_argument("edges", type=str, help="Path to edge list file (u v per line).")
     p.add_argument(
-        "-o", "--out", type=str, default="auth_by_start.json", help="Output JSON path."
+        "-o",
+        "--out",
+        type=str,
+        default="auth_by_start.json",
+        help="Output JSON path.",
     )
     p.add_argument(
         "--ng-ratio",
@@ -147,9 +151,13 @@ def main():
         raise SystemExit(f"Edge list not found: {edge_path}")
 
     edges = read_edge_list(edge_path)
-    auth = build_auth_table(edges, ng_ratio=args.ng_ratio)
+    auth = build_auth_table1(edges, ng_ratio=args.ng_ratio)
 
-    out_path = Path(args.out)
+    # ★ 固定出力先フォルダ（プロジェクトルートからの相対パス）
+    out_dir = Path("./base/auth-many-server/")
+
+    # out_path = Path(args.out)
+    out_path = out_dir / "auth_by_start.json"
     out_path.write_text(
         json.dumps(auth, indent=2, ensure_ascii=False), encoding="utf-8"
     )

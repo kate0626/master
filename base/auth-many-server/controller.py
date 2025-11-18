@@ -135,6 +135,8 @@ def main() -> None:
     print("\n[Controller] Collecting access statistics from all servers...")
     global_access = defaultdict(int)
     global_authorized = defaultdict(int)
+    global_auth_attempts = defaultdict(int)
+    global_auth_denied = defaultdict(int)
     global_transition = defaultdict(int)
 
     for sid, endpoint in enumerate(args.server_endpoints):
@@ -146,14 +148,48 @@ def main() -> None:
             global_access[k] += v
         for k, v in stats.get("authorized", {}).items():
             global_authorized[k] += v
+        for k, v in stats.get("authorization_attempts", {}).items():
+            global_auth_attempts[k] += v
+        for k, v in stats.get("authorization_denied", {}).items():
+            global_auth_denied[k] += v
         for k, v in stats.get("transition", {}).items():
             global_transition[k] += v
+
+    total_attempts = sum(global_auth_attempts.values())
+    total_denied = sum(global_auth_denied.values())
+    failure_rates = {}
+    for entity, attempts in global_auth_attempts.items():
+        if attempts <= 0:
+            continue
+        failures = global_auth_denied.get(entity, 0)
+        failure_rates[entity] = failures / attempts if attempts else 0.0
+
+    if total_attempts:
+        failure_rate = total_denied / total_attempts
+        print(
+            f"[Controller] Authorization totals: attempts={total_attempts}, "
+            f"failures={total_denied} ({failure_rate:.2%})"
+        )
+        sorted_entities = sorted(
+            failure_rates.items(), key=lambda kv: kv[1], reverse=True
+        )
+        if sorted_entities:
+            print("[Controller] Failure rate per entity (降順、全件):")
+            for entity, rate in sorted_entities:
+                attempts = global_auth_attempts.get(entity, 0)
+                failures = global_auth_denied.get(entity, 0)
+                print(
+                    f"  {entity}: {failures}/{attempts} failures ({rate:.2%})"
+                )
 
     # 結果をファイル保存
     output_filename = f"{args.walks}_{args.alpha}_global_transition.json"
     out = {
         "access": dict(global_access),
         "authorized": dict(global_authorized),
+        "authorization_attempts": dict(global_auth_attempts),
+        "authorization_denied": dict(global_auth_denied),
+        "authorization_failure_rate": {k: v for k, v in failure_rates.items()},
         "transition": dict(global_transition),
     }
     out_path = Path(output_filename)
