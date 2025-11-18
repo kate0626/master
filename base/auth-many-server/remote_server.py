@@ -14,6 +14,7 @@ from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
 import atexit  # ← 追加
 from collections import Counter  # ← 追加
+from datetime import datetime, timezone
 
 NodeId = Union[int, str]
 
@@ -26,6 +27,11 @@ NodeId = Union[int, str]
 # ---------------------------------------------------------------------------
 # Shared utilities
 # ---------------------------------------------------------------------------
+def now_iso() -> str:
+    """Timezone-aware ISO8601 timestamp for logging/metrics."""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
 def make_edge_id(u: int, v: int) -> str:
     """
     u, v をソートして昇順に並べ、f"edge_{a}_{b}" という文字列を返す。
@@ -213,39 +219,12 @@ def deserialize_rng_state(jsonable_state: Any) -> tuple:
     return _from_jsonable(jsonable_state)
 
 
-# ---------------------------------------------------------------------------
-# Walk execution
-# ---------------------------------------------------------------------------
-
-
-def _list_to_tuple(obj):
-    if isinstance(obj, list):
-        return tuple(_list_to_tuple(x) for x in obj)
-    return obj
-
-
-def serialize_rng_state(rng: random.Random) -> str:
-    # getstate() はタプルなので、JSON化のためリストに変換
-    return json.dumps(_tuple_to_list(rng.getstate()))
-
-
-def _tuple_to_list(obj):
-    if isinstance(obj, tuple):
-        return [_tuple_to_list(x) for x in obj]
-    return obj
-
-
-def deserialize_rng_state(state_json: str):
-    try:
-        state = json.loads(state_json)
-        # JSONから読み込んだリストをタプルに戻す
-        return _list_to_tuple(state)
-    except Exception:
-        return None
-
-
-## TODO: ここからRW
 class PeerWalker:
+    """
+    Same control flow as the base `remote_server_edge` walker, with the addition
+    of authorization-aware neighbor selection and per-entity statistics.
+    """
+
     def __init__(
         self,
         shard,
@@ -265,13 +244,8 @@ class PeerWalker:
         self.auth_table = auth_table or {}
         self.stats_collector = stats_collector
 
-        # === 認可統計の初期化 ===
-        self.access_counter = Counter()  # どのエンティティにアクセスしたか
-        self.authorized_counter = Counter()  # 認可を通過したもの
-        self.transition_counter = Counter()  # from→to の遷移
-
+    # --- Authorization helpers ---------------------------------------------
     def _record_auth_cost(self, duration: float) -> None:
-        """認可処理 1 回分の時間を秒単位で加算する"""
         if self.stats_collector is None:
             return
         server = self.stats_collector
@@ -279,40 +253,72 @@ class PeerWalker:
             server.auth_time_total += duration
         if hasattr(server, "auth_calls"):
             server.auth_calls += 1
-        # 認可一回分の計測結果を逐次ログ出力
-        total = getattr(server, "auth_time_total", None)
-        calls = getattr(server, "auth_calls", None)
-        server_id = getattr(server, "server_id", "?")
-        # if total is not None and calls is not None:
-        #     print(
-        #         f"[Server {server_id}] auth#{calls} took {duration:.6f}s (total {total:.6f}s)"
-        #     )
 
-    # --- 認可判定 ---
-    def _is_allowed_entity(self, start_node: int, entity: Any) -> bool:
-        # 認可テーブルからスタートノードを参照して許可できるものとってくる
+    def _is_allowed_entity(self, start_node: Optional[int], entity: Any) -> bool:
+        if start_node is None:
+            return False
         entry = self.auth_table.get(start_node)
         if entry is None:
             return False
-        # エンティティがノードの場合、もしエンティティに対象のノードが含まれていればTrue
         if isinstance(entity, int):
             return entity in entry.get("n", set())
-        # エンティティがエッジの場合
         if isinstance(entity, str):
             return entity in entry.get("e", set())
         return False
 
-    # --- 隣接取得（ノード→エッジ、エッジ→ノード） ---
     def _get_local_neighbors(self, entity_id: Any) -> List[Dict[str, Any]]:
-        # 次の隣接ノード、エッジの候補を上げる
         neighbors = self.shard.get_neighbors(entity_id)
         if not neighbors:
             return []
         return [asdict(n) for n in neighbors]
 
-    # --- サーバ間転送 ---
+    def _select_next_neighbor(
+        self,
+        rng: random.Random,
+        neighbors: List[Dict[str, Any]],
+        start_node: Optional[int],
+        current_entity: NodeId,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        if not neighbors:
+            return None, None
+        max_retries = len(neighbors)
+        next_choice: Optional[Dict[str, Any]] = None
+        ## 認可の代替
+        # for _ in range(max_retries):
+        #     # 認可はスキップ
+        #     candidate = rng.choice(neighbors)
+        #     next_choice = candidate
+        #     break
+        # ここまで
+        # ここから認可特有のフェーズ
+        # 隣接が全部NGになるまで繰り返す
+        for _ in range(max_retries):
+            self._record_authorization_attempt(current_entity)
+            candidate = rng.choice(neighbors)
+            cid = candidate["node_id"]
+            t0 = time.perf_counter()
+            allowed = self._is_allowed_entity(start_node, cid)
+            t1 = time.perf_counter()
+            self._record_auth_cost(t1 - t0)
+            if allowed:
+                next_choice = candidate
+                self._record_authorization_success(current_entity, cid)
+                break
+            self._record_authorization_denial(current_entity)
+
+        if next_choice is None:
+            print(
+                f"[Server {self.shard.server_id}] All {max_retries} neighbors denied → stop"
+            )
+            denial = {
+                "denied": True,
+                "denied_reason": f"no authorized neighbors from {current_entity}",
+            }
+            return None, denial
+        # ここまで
+        return next_choice, None
+
     def _post_continue(self, server_id: int, state: dict) -> dict:
-        # 他のサーバに ランダムウォークの続き を委譲するための HTTP POST 処理、server_id に応じて URL を作り、state（現在のウォーク情報）を JSON で送信。
         url = f"{self.endpoints[server_id].rstrip('/')}/continue_walk"
         data = json.dumps(state).encode("utf-8")
         req = urllib_request.Request(
@@ -321,54 +327,31 @@ class PeerWalker:
         with urllib_request.urlopen(req, timeout=self.request_timeout) as resp:
             return json.loads(resp.read())
 
-    # --- メインロジック ---
+    # --- Main walk ----------------------------------------------------------
     def continue_from_state(self, state: dict) -> dict:
-        # 現在のサーバのID取得
         current_sid = self.shard.server_id
-        # RWが継続の時もあるので、現在のエンティティを取得
-        rng = random.Random(state.get("seed"))
         rng_state_json = state.get("rng_state")
+        rng = random.Random()
         if rng_state_json is not None:
             loaded = deserialize_rng_state(rng_state_json)
             if loaded:
                 rng.setstate(loaded)
-        # print(state["current_node"])
-        current_entity = state["current_node"]
+        else:
+            rng = random.Random(state.get("seed"))
+
+        current_entity: NodeId = state["current_node"]
         path = list(state["path"])
         servers = list(state["servers"])
         alpha = float(state["alpha"])
         hops_done = int(state.get("hops_done", 0))
-        # 現在位置を訪問済みとして記録
+        start_node = self._resolve_start_node(state, path)
+
         self._record_entity_visit(current_entity)
 
-        # --- start_node 確定 ---
-        start_node = None
-        if "start_node" in state:
-            try:
-                start_node = int(state["start_node"])
-            except Exception:
-                pass
-        elif path:
-            try:
-                start_node = int(path[0])
-            except Exception:
-                pass
-
-        # print(
-        #     f"[Server {current_sid}] continue_from_state: start={start_node}, current={current_entity}, hops={hops_done}"
-        # )
-
-        # --- ランダムウォーク ---
-        # 終了確率に達するまで行う
         while hops_done < self.max_hops and rng.random() > alpha:
             hops_done += 1
-
-            # 所有サーバ確認
             owner = self.shard.partitioner.assign_entity(current_entity)
             if owner != current_sid:
-                # print(
-                #     f"[Server {current_sid}] entity {current_entity} not local (owner={owner}) → delegate"
-                # )
                 state_out = {
                     "start_node": start_node,
                     "current_node": current_entity,
@@ -380,74 +363,29 @@ class PeerWalker:
                 }
                 return self._post_continue(owner, state_out)
 
-            # --- 隣接ノードもしくはエッジを取得
             neighbors = self._get_local_neighbors(current_entity)
-            # if not neighbors:
-            #     print(
-            #         f"[Server {current_sid}] {current_entity} has no neighbors → finish"
-            #     )
-            #     return {
-            #         "finished": True,
-            #         "path": path,
-            #         "servers": servers,
-            #         "hops_done": hops_done,
-            #     }
-
-            # --- 認可を考慮したランダム選択 ---
-            max_retries = len(neighbors)
-            next_choice = None
-            # === ここから追加: アクセス・認可・遷移カウンタ ===
-            for attempt in range(max_retries):
-                # 乱数で選ぶ
-                self._record_authorization_attempt(current_entity)
-                candidate = rng.choice(neighbors)
-                cid = candidate["node_id"]
-                # print(
-                #     f"[Server {current_sid}] Attempt {attempt+1}/{max_retries}: candidate={cid}"
-                # )
-                ## 認可時間の測定開始
-                t0 = time.perf_counter()
-                allowed = self._is_allowed_entity(start_node, cid)
-                t1 = time.perf_counter()
-                # 認可判定 1 回ごとの所要時間を累積
-                self._record_auth_cost(t1 - t0)
-
-                # ランダムに選んだものが許可されているか
-                if allowed:
-                    # print(f"[Server {current_sid}] Authorized → move to {cid}")
-                    next_choice = candidate
-                    # 認可成功したエンティティをカウント
-                    self._record_authorization_success(current_entity, cid)
-                    break
-                self._record_authorization_denial(current_entity)
-
+            next_choice, denial_payload = self._select_next_neighbor(
+                rng, neighbors, start_node, current_entity
+            )
             if next_choice is None:
-                print(
-                    f"[Server {current_sid}] All {max_retries} neighbors denied → stop"
-                )
-                return {
+                result = {
                     "finished": True,
                     "path": path,
                     "servers": servers,
                     "hops_done": hops_done,
-                    "denied": True,
-                    "denied_reason": f"no authorized neighbors from {current_entity}",
                 }
+                if denial_payload:
+                    result.update(denial_payload)
+                return result
 
-            # --- 移動処理 ---
             next_entity = next_choice["node_id"]
             next_server = int(next_choice["server_id"])
-            # 実際に訪問したエンティティのみ記録
             self._record_entity_visit(next_entity)
-            # print(
-            #     f"[Server {current_sid}] hop {hops_done}: {current_entity} -> {next_entity} (server {next_server})"
-            # )
 
             path.append(next_entity)
             servers.append(next_server)
             current_entity = next_entity
 
-            # サーバ移動が発生したら委譲
             if next_server != current_sid:
                 state_out = {
                     "start_node": start_node,
@@ -458,12 +396,8 @@ class PeerWalker:
                     "rng_state": serialize_rng_state(rng),
                     "hops_done": hops_done,
                 }
-                # print(
-                #     f"[Server {current_sid}] delegating walk to server {next_server} (entity={current_entity})"
-                # )
                 return self._post_continue(next_server, state_out)
 
-        # --- 終了条件処理 ---
         if hops_done >= self.max_hops:
             print(f"[Server {current_sid}] reached max hops {self.max_hops} → finish")
         else:
@@ -475,6 +409,22 @@ class PeerWalker:
             "servers": servers,
             "hops_done": hops_done,
         }
+
+    # --- Stats helpers ------------------------------------------------------
+    def _resolve_start_node(
+        self, state: Dict[str, Any], path: List[NodeId]
+    ) -> Optional[int]:
+        if "start_node" in state:
+            try:
+                return int(state["start_node"])
+            except Exception:
+                return None
+        if path:
+            try:
+                return int(path[0])
+            except Exception:
+                return None
+        return None
 
     def _bump_server_counter(self, attr: str, key: Any) -> None:
         """Safely increment shared counters if the server exposed them."""
@@ -613,7 +563,8 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             stats_collector=self.server,
         )
         start_ts = time.perf_counter()
-        # print(start_ts)
+        wall_start_epoch = time.time()
+        wall_start_iso = now_iso()
         results = []
         for i in range(walks):
             rng = random.Random(seed if seed is None else (seed + i))
@@ -629,9 +580,23 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             res = walker.continue_from_state(initial_state)
             results.append(res)
             # time.sleep(0.01)
+        wall_end_epoch = time.time()
+        wall_end_iso = now_iso()
         duration = time.perf_counter() - start_ts
-        # print(duration)
-        payload = {"walks": results, "duration": duration}
+        payload = {
+            "walks": results,
+            "metrics": {
+                "server_id": self.server.server_id,
+                "duration_sec": duration,
+                "wall_start_epoch": wall_start_epoch,
+                "wall_end_epoch": wall_end_epoch,
+                "wall_start_time": wall_start_iso,
+                "wall_end_time": wall_end_iso,
+                "walks_requested": walks,
+                "walks_completed": len(results),
+                "alpha": float(alpha),
+            },
+        }
         print(
             f"[Server {self.server.server_id}] finished /walk in {duration:.3f}s; returning {len(results)} walks"
         )

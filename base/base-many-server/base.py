@@ -10,7 +10,7 @@ from typing import List, Optional
 from urllib import request as urllib_request
 
 """
-    python3 base/auth-many-server/controller.py --servers 2 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --start-node 1 --walks 3 --alpha 0.5 --seed 42
+    python3 base/base-many-server/controller.py --servers 2 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --start-node 1 --walks 3 --alpha 0.5 --seed 42
 """
 
 
@@ -65,25 +65,34 @@ def main() -> None:
     }
 
     t0 = time.perf_counter()
-    print(
-        f"[Controller] Sending /walk to server {start_server} ({endpoint}) with payload: start_node={args.start_node}, alpha={args.alpha}, walks={args.walks}"
-    )
+    # print(
+    #     f"[Controller] Sending /walk to server {start_server} ({endpoint}) with payload: start_node={args.start_node}, alpha={args.alpha}, walks={args.walks}"
+    # )
     res = start_walk_on_server(endpoint, payload, timeout=args.request_timeout)
     t1 = time.perf_counter()
     walks = res.get("walks", [])
-    duration = res.get("duration")
+    metrics = res.get("metrics", {})
+    duration = metrics.get("duration_sec", res.get("duration"))
     total_steps = sum(len(w.get("path", [])) for w in walks)
     avg_len = total_steps / max(1, len(walks))
-    print(
-        f"[Controller] Received {len(walks)} walks in {t1-t0:.3f}s. Avg length: {avg_len:.3f}, total steps: {total_steps}"
-    )
+    # print(
+    #     f"[Controller] Received {len(walks)} walks in {t1-t0:.3f}s. Avg length: {avg_len:.3f}, total steps: {total_steps}"
+    # )
     if duration is not None:
         try:
             duration_val = float(duration)
         except (TypeError, ValueError):
             duration_val = None
         if duration_val is not None:
-            print(f"[Controller] duration {duration_val:.6f}")
+            print(f"[Controller] duration {duration_val:.6f}s")
+
+    if metrics:
+        wall_start = metrics.get("wall_start_time")
+        wall_end = metrics.get("wall_end_time")
+        # if wall_start and wall_end:
+        # print(
+        #     f"[Controller] server wall clock window: {wall_start} -> {wall_end} (epoch {metrics.get('wall_start_epoch')} -> {metrics.get('wall_end_epoch')})"
+        # )
     # server visit counts
     server_visits = defaultdict(int)
     for w in walks:
@@ -94,9 +103,9 @@ def main() -> None:
         print(f"  Server {sid}: {server_visits.get(sid, 0)}")
 
     # optionally print each walk
-    for i, w in enumerate(walks):
-        print(f"Walk[{i}] path: {w.get('path')}")
-        print(f"Walk[{i}] servers: {w.get('servers')}")
+    # for i, w in enumerate(walks):
+    #     print(f"Walk[{i}] path: {w.get('path')}")
+    #     print(f"Walk[{i}] servers: {w.get('servers')}")
 
 
 if __name__ == "__main__":
