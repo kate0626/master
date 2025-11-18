@@ -138,6 +138,9 @@ def main() -> None:
     global_auth_attempts = defaultdict(int)
     global_auth_denied = defaultdict(int)
     global_transition = defaultdict(int)
+    # ★ 認可時間・回数
+    total_auth_time = 0.0
+    total_auth_calls = 0
 
     for sid, endpoint in enumerate(args.server_endpoints):
         stats = fetch_access_stats(endpoint, timeout=args.request_timeout)
@@ -154,6 +157,19 @@ def main() -> None:
             global_auth_denied[k] += v
         for k, v in stats.get("transition", {}).items():
             global_transition[k] += v
+
+        # ★ 認可時間（秒）と回数を加算
+        total_auth_time += float(stats.get("auth_time_total", 0.0))
+        total_auth_calls += int(stats.get("auth_calls", 0))
+
+    print(f"Total authorization time (sum over all servers): {total_auth_time:.6f} s")
+    if total_auth_calls > 0:
+        avg_ms = (total_auth_time / total_auth_calls) * 1000.0
+        print(
+            f"Average authorization time per call: {avg_ms:.3f} ms  (calls={total_auth_calls})"
+        )
+    else:
+        print("No authorization calls recorded.")
 
     total_attempts = sum(global_auth_attempts.values())
     total_denied = sum(global_auth_denied.values())
@@ -178,9 +194,7 @@ def main() -> None:
             for entity, rate in sorted_entities:
                 attempts = global_auth_attempts.get(entity, 0)
                 failures = global_auth_denied.get(entity, 0)
-                print(
-                    f"  {entity}: {failures}/{attempts} failures ({rate:.2%})"
-                )
+                print(f"  {entity}: {failures}/{attempts} failures ({rate:.2%})")
 
     # 結果をファイル保存
     output_filename = f"{args.walks}_{args.alpha}_global_transition.json"
@@ -191,6 +205,9 @@ def main() -> None:
         "authorization_denied": dict(global_auth_denied),
         "authorization_failure_rate": {k: v for k, v in failure_rates.items()},
         "transition": dict(global_transition),
+        # ★ 認可時間の集計
+        "auth_time_total": total_auth_time,
+        "auth_calls": total_auth_calls,
     }
     out_path = Path(output_filename)
     out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")

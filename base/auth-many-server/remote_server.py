@@ -270,6 +270,24 @@ class PeerWalker:
         self.authorized_counter = Counter()  # 認可を通過したもの
         self.transition_counter = Counter()  # from→to の遷移
 
+    def _record_auth_cost(self, duration: float) -> None:
+        """認可処理 1 回分の時間を秒単位で加算する"""
+        if self.stats_collector is None:
+            return
+        server = self.stats_collector
+        if hasattr(server, "auth_time_total"):
+            server.auth_time_total += duration
+        if hasattr(server, "auth_calls"):
+            server.auth_calls += 1
+        # 認可一回分の計測結果を逐次ログ出力
+        total = getattr(server, "auth_time_total", None)
+        calls = getattr(server, "auth_calls", None)
+        server_id = getattr(server, "server_id", "?")
+        # if total is not None and calls is not None:
+        #     print(
+        #         f"[Server {server_id}] auth#{calls} took {duration:.6f}s (total {total:.6f}s)"
+        #     )
+
     # --- 認可判定 ---
     def _is_allowed_entity(self, start_node: int, entity: Any) -> bool:
         # 認可テーブルからスタートノードを参照して許可できるものとってくる
@@ -387,12 +405,18 @@ class PeerWalker:
                 # print(
                 #     f"[Server {current_sid}] Attempt {attempt+1}/{max_retries}: candidate={cid}"
                 # )
+                ## 認可時間の測定開始
+                t0 = time.perf_counter()
+                allowed = self._is_allowed_entity(start_node, cid)
+                t1 = time.perf_counter()
+                # 認可判定 1 回ごとの所要時間を累積
+                self._record_auth_cost(t1 - t0)
+
                 # ランダムに選んだものが許可されているか
-                if self._is_allowed_entity(start_node, cid):
+                if allowed:
                     # print(f"[Server {current_sid}] Authorized → move to {cid}")
                     next_choice = candidate
                     # 認可成功したエンティティをカウント
-                    self._bump_server_counter("authorized_counter", cid)
                     self._record_authorization_success(current_entity, cid)
                     break
                 self._record_authorization_denial(current_entity)
@@ -497,6 +521,9 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
                 ),
                 "authorization_denied": dict(self.server.authorization_denied_counter),
                 "transition": dict(self.server.transition_counter),
+                # ★ 認可時間（秒）と呼び出し回数
+                "auth_time_total": self.server.auth_time_total,
+                "auth_calls": self.server.auth_calls,
             }
             self._write_json(payload)
             return
@@ -683,6 +710,9 @@ class GraphShardServer(ThreadingHTTPServer):
         self.authorization_denied_counter = Counter()  # 認可失敗回数
         self.transition_counter = Counter()  # 遷移 (from→to) のペア頻度
         # === 追加ここまで ===
+        # ★ 認可にかかった時間の合計（秒）と呼び出し回数
+        self.auth_time_total = 0.0
+        self.auth_calls = 0
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -766,10 +796,16 @@ def main() -> None:
             "authorization_attempts": dict(server.authorization_attempt_counter),
             "authorization_denied": dict(server.authorization_denied_counter),
             "transition": dict(server.transition_counter),
+            # ★ 追加
+            "auth_time_total": server.auth_time_total,
+            "auth_calls": server.auth_calls,
         }
         out_path = Path(f"access_stats_server{server.server_id}.json")
         out_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
-        # print(f"[Server {server.server_id}] Access stats saved to {out_path}")
+        print(
+            f"[Server {server.server_id}] auth summary: {server.auth_calls} calls, total {server.auth_time_total:.6f}s"
+        )
+        print(f"[Server {server.server_id}] Access stats saved to {out_path}")
 
     atexit.register(dump_access_stats)
     try:
