@@ -4,6 +4,7 @@ set -euo pipefail
 ############################################################
 #  実験設定パート
 #  （すべての数字・ファイルパス・条件はここで定義）
+# ./base/auth-many-server/all.sh 2
 ############################################################
 
 ## --- 実行回数設定 ---
@@ -27,8 +28,8 @@ SERVERS=(
 ## --- スイープパラメータ設定 ---
 # ここを変えるだけで一括実験条件が変わる！
 WALKS_LIST=(100)
-ALPHA_LIST=(0.01)
-NG_RATIO_LIST=(0.0 1.0)
+ALPHA_LIST=(0.1 0.05 0.04 0.03 0.02 0.01)
+NG_RATIO_LIST=(0.0)
 START_NODE=1                      # RWの開始ノード
 DEFAULT_WALKS=10                  # 参考値（controller.pyのデフォルト想定）
 
@@ -84,13 +85,14 @@ timeout ${TIMEOUT}s bash -c \"grep -m1 '${TARGET_LOG}' <(tail -f remote_server.l
 generate_remote_auth_table() {
   local host=$1 ratio=$2
   echo ">>> [${host}] auth_by_start.json を生成中 (ng_ratio=${ratio})..."
-  local repo_dir_q edge_file_q auth_json_q ratio_q
+  local repo_dir_q edge_file_q auth_json_q ratio_q remote_cmd remote_cmd_q
   printf -v repo_dir_q '%q' "${REPO_DIR}"
   printf -v edge_file_q '%q' "${EDGE_FILE}"
   printf -v auth_json_q '%q' "${AUTH_JSON}"
   printf -v ratio_q '%q' "${ratio}"
-  local remote_cmd="set -euo pipefail; cd ${repo_dir_q}; python3 base/auth-many-server/create_json_table.py ${edge_file_q} -o ${auth_json_q} --ng-ratio ${ratio_q}"
-  ssh "$host" bash -lc "${remote_cmd}"
+  remote_cmd="set -euo pipefail; cd ${repo_dir_q}; python3 base/auth-many-server/create_json_table.py ${edge_file_q} -o ${auth_json_q} --ng-ratio ${ratio_q}"
+  printf -v remote_cmd_q '%q' "${remote_cmd}"
+  ssh "$host" bash -lc "${remote_cmd_q}"
 }
 
 # --- 平均計算 ---
@@ -141,6 +143,7 @@ for ng_ratio in "${NG_RATIO_LIST[@]}"; do
       total_steps_list=()
       successful_runs=0
       remote_durations=()  
+      auth_times=()
 
       for ((run=1; run<=RUN_COUNT; run++)); do
         echo ">>> [RUN ${run}/${RUN_COUNT}] start: $(date '+%Y-%m-%d %H:%M:%S')" >> "${LOG_FILE}"
@@ -160,6 +163,8 @@ for ng_ratio in "${NG_RATIO_LIST[@]}"; do
 
         parsed_line=$(echo "${run_output}" | grep -Eo '\[Controller\] Received [0-9]+ walks in [0-9.]+s\. Avg length: [0-9.]+, total steps: [0-9]+' | tail -n1 || true)
         inner_duration_line=$(echo "${run_output}" | grep -Eo 'duration[[:space:]]+[0-9.]+' | awk '{print $2}' | tail -n1)
+        echo ">>> ${inner_duration_line}"
+        auth_time_line=$(echo "${run_output}" | grep -E 'Total authorization time .*: [0-9.]+ s' | tail -n1 || true)
         
         if [[ -n "${parsed_line}" ]]; then
           duration=$(echo "${parsed_line}" | sed -E 's/.* in ([0-9.]+)s.*/\1/')
@@ -171,14 +176,21 @@ for ng_ratio in "${NG_RATIO_LIST[@]}"; do
             inner_duration="NaN"
           fi
 
+          if [[ -n "${auth_time_line}" ]]; then
+            auth_time_val=$(echo "${auth_time_line}" | sed -E 's/.*: ([0-9.]+) s/\1/')
+          else
+            auth_time_val="NaN"
+          fi
+
           durations+=("${duration}")
           avg_lengths+=("${avg_len}")
           total_steps_list+=("${total_steps}")
           remote_durations+=("${inner_duration}")
+          auth_times+=("${auth_time_val}")
           # ((successful_runs++))
           
           # echo ">>> [RUN ${run}] OK: duration=${duration}s, avg_len=${avg_len}, steps=${total_steps}" >> "${LOG_FILE}"
-          echo ">>> [RUN ${run}] OK: dur=${duration}s, remote_dur=${remote_durations}s, len=${avg_len}, steps=${total_steps}" >> "${LOG_FILE}"
+          echo ">>> [RUN ${run}] OK: dur=${duration}s, remote_dur=${remote_durations}s, auth_time=${auth_time_val}s, len=${avg_len}, steps=${total_steps}" >> "${LOG_FILE}"
         else
           echo ">>> [RUN ${run}] controller.py の結果を解析できませんでした" >> "${LOG_FILE}"
         fi
@@ -193,9 +205,11 @@ for ng_ratio in "${NG_RATIO_LIST[@]}"; do
           avg_walk_length=$(calc_average "${avg_lengths[@]}")
           avg_total_steps=$(calc_average "${total_steps_list[@]}")
           avg_remote_duration=$(calc_average "${remote_durations[@]:-}")
+          avg_auth_time=$(calc_average "${auth_times[@]:-}")
           echo ">>> 平均値 (${successful_runs}/${RUN_COUNT})"
           echo "    - duration: ${avg_duration}s"
           echo "    - remote_duration: ${avg_remote_duration}s"
+          echo "    - auth_time_total: ${avg_auth_time}s"
           echo "    - avg_length: ${avg_walk_length}"
           echo "    - total_steps: ${avg_total_steps}"
         else

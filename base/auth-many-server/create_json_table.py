@@ -151,7 +151,7 @@ def main():
         raise SystemExit(f"Edge list not found: {edge_path}")
 
     edges = read_edge_list(edge_path)
-    auth = build_auth_table1(edges, ng_ratio=args.ng_ratio)
+    auth = build_auth_table2(edges, ng_ratio=args.ng_ratio)
 
     # ★ 固定出力先フォルダ（プロジェクトルートからの相対パス）
     out_dir = Path("./base/auth-many-server/")
