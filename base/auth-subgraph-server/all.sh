@@ -4,7 +4,7 @@ set -euo pipefail
 ############################################################
 #  実験設定パート
 #  （すべての数字・ファイルパス・条件はここで定義）
-# ./base/auth-many-server/all.sh 2
+# ./base/auth-subgraph-server/all.sh 2
 ############################################################
 
 ## --- 実行回数設定 ---
@@ -13,13 +13,14 @@ TIMEOUT=10                        # サーバ起動待機の最大時間 [秒]
 SEED_BASE=42                      # 乱数シードの基準値
 
 ## --- ファイル設定 ---
-EDGE_FILE="dataset/Louvain/graph/karate.gr"
-# AUTH_JSON="base/auth-many-server/auth_by_start.json"
-AUTH_JSON="base/auth-many-server/auth_by_start.json"
-NODE_TO_STARTS_JSON="base/auth-many-server/node_to_starts.json"
+EDGE_FILE="dataset/Louvain/graph/rt-retweet.gr"
+SUBGRAPH_JSON="base/auth-subgraph-server/subgraph_index.json"
+NODE_TO_STARTS_JSON="base/auth-subgraph-server/node_to_starts.json"
 REPO_DIR="./"
 RUNS_DIR="runs"
-LOG_DIR="${RUNS_DIR}/auth"
+LOG_DIR="${RUNS_DIR}/auth_subgraph"
+SUBGRAPH_SIZE=5                   # サブグラフの最大ノード数
+SUBGRAPH_SEED=2024                # サブグラフ生成＆NG割り当て用シード
 
 ## --- サーバ設定 ---
 SERVERS=(
@@ -29,13 +30,12 @@ SERVERS=(
 
 ## --- スイープパラメータ設定 ---
 # ここを変えるだけで一括実験条件が変わる！
-WALKS_LIST=(10)
-ALPHA_LIST=(0.1)
+WALKS_LIST=(100)
+ALPHA_LIST=(0.01)
 NG_RATIO_LIST=(0.3)
 START_NODE=1                      # RWの開始ノード
 DEFAULT_WALKS=10                  # 参考値（controller.pyのデフォルト想定）
-# PPR_MODE=1                      # 1 にするとサーバを --ppr-mode で起動
-# VISIBLE_MODE=0                    # 1 で remote_server_visi.py を利用
+PPR_MODE=1                        # 1 で --ppr-mode を付けて起動
 
 ############################################################
 #  実行前の準備パート
@@ -50,39 +50,15 @@ done
 SERVER_ENDPOINTS_STR="${SERVER_ENDPOINTS[*]}"
 TARGET_LOG="^\\[Server"
 
-# 手で動かしていたコマンドに揃える:
-# python3 base/auth-many-server/remote_server.py \
-#   --server-id 0 --server-count 1 \
-#   --edges dataset/Louvain/graph/karate.gr \
-#   --host 10.58.60.5 --port 3000 \
-#   --server-endpoints 10.58.60.5:3000 \
-#   --auth-file base/auth-many-server/auth_by_start.json \
-#   --node-to-starts-file base/auth-many-server/node_to_starts.json
-REMOTE_CMD_BASE="python3 base/auth-many-server/remote_server.py \
+REMOTE_CMD_BASE="python3 base/auth-subgraph-server/remote_server.py \
   --server-count ${SERVER_COUNT} \
   --edges ${EDGE_FILE} \
   --server-endpoints ${SERVER_ENDPOINTS_STR} \
-  --auth-file ${AUTH_JSON} \
+  --subgraph-file ${SUBGRAPH_JSON} \
   --node-to-starts-file ${NODE_TO_STARTS_JSON}"
-
-# if (( VISIBLE_MODE )); then
-#   REMOTE_SERVER_SCRIPT="remote_server_visi.py"
-#   REMOTE_CMD_BASE="python3 base/auth-many-server/${REMOTE_SERVER_SCRIPT} \
-#   --server-count ${SERVER_COUNT} \
-#   --edges ${EDGE_FILE} \
-#   --server-endpoints ${SERVER_ENDPOINTS_STR} \
-#   --auth-file ${AUTH_JSON}"
-# else
-#   REMOTE_SERVER_SCRIPT="remote_server.py"
-#   REMOTE_CMD_BASE="python3 base/auth-many-server/${REMOTE_SERVER_SCRIPT} \
-#   --server-count ${SERVER_COUNT} \
-#   --edges ${EDGE_FILE} \
-#   --server-endpoints ${SERVER_ENDPOINTS_STR} \
-#   --node-to-starts-file ${NODE_TO_STARTS_JSON}"
-#   if (( PPR_MODE )); then
-#     REMOTE_CMD_BASE+=" --ppr-mode"
-#   fi
-# fi
+if (( PPR_MODE )); then
+  REMOTE_CMD_BASE+=" --ppr-mode"
+fi
 
 ############################################################
 #  関数定義パート
@@ -93,7 +69,7 @@ cleanup() {
   echo ">>> [CLEANUP] 全サーバ停止中..."
   for entry in "${SERVERS[@]}"; do
     eval "$entry"
-    ssh -o ConnectTimeout=5 "$host" "pkill -f base/auth-many-server/remote_server.py || true" >/dev/null 2>&1 || true
+    ssh -o ConnectTimeout=5 "$host" "pkill -f base/auth-subgraph-server/remote_server.py || true" >/dev/null 2>&1 || true
   done
   echo ">>> [CLEANUP] 完了。"
 }
@@ -117,18 +93,13 @@ timeout ${TIMEOUT}s bash -c \"grep -m1 '${TARGET_LOG}' <(tail -f remote_server.l
 generate_remote_auth_table() {
   local host=$1 ratio=$2
   echo ">>> [${host}] node_to_starts.json を生成中 (ng_ratio=${ratio})..."
-  local repo_dir_q edge_file_q auth_json_q ratio_q extra_flags remote_cmd remote_cmd_q
+  local repo_dir_q edge_file_q auth_json_q subgraph_json_q ratio_q remote_cmd remote_cmd_q
   printf -v repo_dir_q '%q' "${REPO_DIR}"
   printf -v edge_file_q '%q' "${EDGE_FILE}"
-  printf -v auth_json_q '%q' "${NODE_TO_STARTS_JSON}"
+  printf -v auth_json_q '%q' "base/auth-subgraph-server/auth_by_start.json"
+  printf -v subgraph_json_q '%q' "${SUBGRAPH_JSON}"
   printf -v ratio_q '%q' "${ratio}"
-  remote_cmd="set -euo pipefail; cd ${repo_dir_q}; python3 base/auth-many-server/create_json_table.py ${edge_file_q} -o ${auth_json_q} --ng-ratio ${ratio_q}"
-
-  # extra_flags=""
-  # if (( VISIBLE_MODE )); then
-  #   extra_flags="--emit-auth-table"
-  # fi
-  # remote_cmd="set -euo pipefail; cd ${repo_dir_q}; python3 base/auth-many-server/create_json_table.py ${edge_file_q} -o ${auth_json_q} --ng-ratio ${ratio_q} ${extra_flags}"
+  remote_cmd="set -euo pipefail; cd ${repo_dir_q}; python3 base/auth-subgraph-server/create_json_table.py ${edge_file_q} -o ${auth_json_q} --subgraph-out ${subgraph_json_q} --ng-ratio ${ratio_q} --subgraph-size ${SUBGRAPH_SIZE} --seed ${SUBGRAPH_SEED}"
   printf -v remote_cmd_q '%q' "${remote_cmd}"
   ssh "$host" bash -lc "${remote_cmd_q}"
 }
@@ -150,8 +121,7 @@ PY
 #  実験実行パート
 ############################################################
 
-# ログディレクトリ作成（サブディレクトリ test まで）
-mkdir -p "${LOG_DIR}/test"
+mkdir -p "${LOG_DIR}"
 
 # --- パラメータスイープ ---
 for ng_ratio in "${NG_RATIO_LIST[@]}"; do
@@ -188,7 +158,7 @@ for ng_ratio in "${NG_RATIO_LIST[@]}"; do
         echo ">>> [RUN ${run}/${RUN_COUNT}] start: $(date '+%Y-%m-%d %H:%M:%S')" >> "${LOG_FILE}"
 
         CONTROLLER_CMD=(
-          python3 base/auth-many-server/controller.py
+          python3 base/auth-subgraph-server/controller.py
           --servers "${SERVER_COUNT}"
           --server-endpoints "${SERVER_ENDPOINTS[@]}"
           --walks "${walks}"

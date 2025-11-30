@@ -17,6 +17,7 @@ from collections import Counter  # ← 追加
 from datetime import datetime, timezone
 
 NodeId = Union[int, str]
+NodeOrEdgeId = Union[int, str]
 
 """
     python3 base/auth-many-server/remote_server.py --edges ./dataset/Louvain/graph/karate.gr --server-count 2 --server-id 1 --host 10.58.60.6 --port 3000 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --auth-file base/auth-many-server/auth_by_start.json
@@ -194,6 +195,36 @@ def load_entity_auth_table(
     return out
 
 
+def load_node_to_starts_table(
+    path: Optional[Union[str, Path]],
+) -> Dict[NodeOrEdgeId, Set[int]]:
+    """
+    JSON format:
+      { "3": [1,5,7], "edge_1_2": [1,2] }
+    Returns: { target_entity (int or str) -> set(start_nodes) }
+    """
+    if path is None:
+        return {}
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"node_to_starts file not found: {p}")
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    out: Dict[NodeOrEdgeId, Set[int]] = {}
+    for k, values in raw.items():
+        try:
+            entity_key: NodeOrEdgeId = int(k)
+        except Exception:
+            entity_key = str(k)
+        starts = set()
+        for v in values:
+            try:
+                starts.add(int(v))
+            except Exception:
+                continue
+        out[entity_key] = starts
+    return out
+
+
 # ---------------------------------------------------------------------------
 # RNG (de)serialization helpers
 # ---------------------------------------------------------------------------
@@ -233,6 +264,8 @@ class PeerWalker:
         max_hops: int = 100000,
         auth_table: Optional[Dict[int, Dict[str, Set[str]]]] = None,
         stats_collector: Optional[Any] = None,
+        ppr_mode: bool = False,
+        node_to_starts: Optional[Dict[NodeOrEdgeId, Set[int]]] = None,
     ):
         self.shard = shard
         self.endpoints = [
@@ -243,6 +276,8 @@ class PeerWalker:
         self.max_hops = max_hops
         self.auth_table = auth_table or {}
         self.stats_collector = stats_collector
+        self.ppr_mode = ppr_mode
+        self.node_to_starts: Dict[NodeOrEdgeId, Set[int]] = node_to_starts or {}
 
     # --- Authorization helpers ---------------------------------------------
     def _record_auth_cost(self, duration: float) -> None:
@@ -255,15 +290,17 @@ class PeerWalker:
             server.auth_calls += 1
 
     def _is_allowed_entity(self, start_node: Optional[int], entity: Any) -> bool:
+        print(start_node)
         if start_node is None:
             return False
-        entry = self.auth_table.get(start_node)
-        if entry is None:
-            return False
         if isinstance(entity, int):
-            return entity in entry.get("n", set())
+            allowed_starts = self.node_to_starts.get(entity)
+            print("allowed_starts", allowed_starts)
+            return bool(allowed_starts and start_node in allowed_starts)
         if isinstance(entity, str):
-            return entity in entry.get("e", set())
+            allowed_starts = self.node_to_starts.get(entity)
+            print("allowed_starts", allowed_starts)
+            return bool(allowed_starts and start_node in allowed_starts)
         return False
 
     def _get_local_neighbors(self, entity_id: Any) -> List[Dict[str, Any]]:
@@ -272,6 +309,7 @@ class PeerWalker:
             return []
         return [asdict(n) for n in neighbors]
 
+    # NOTE: ここが認可アルゴリズムの重要な部分
     def _select_next_neighbor(
         self,
         rng: random.Random,
@@ -295,7 +333,9 @@ class PeerWalker:
         for _ in range(max_retries):
             self._record_authorization_attempt(current_entity)
             candidate = rng.choice(neighbors)
+            print("cansdate", candidate)
             cid = candidate["node_id"]
+            print(cid)
             t0 = time.perf_counter()
             allowed = self._is_allowed_entity(start_node, cid)
             t1 = time.perf_counter()
@@ -347,7 +387,7 @@ class PeerWalker:
         start_node = self._resolve_start_node(state, path)
 
         self._record_entity_visit(current_entity)
-
+        # 終了確率をクリアした時にのみ遷移
         while hops_done < self.max_hops and rng.random() > alpha:
             hops_done += 1
             owner = self.shard.partitioner.assign_entity(current_entity)
@@ -364,6 +404,7 @@ class PeerWalker:
                 return self._post_continue(owner, state_out)
 
             neighbors = self._get_local_neighbors(current_entity)
+            # あるノードが認可を通るか→通るまで繰り返す
             next_choice, denial_payload = self._select_next_neighbor(
                 rng, neighbors, start_node, current_entity
             )
@@ -561,6 +602,8 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             request_timeout=getattr(self.server, "request_timeout", 5.0),
             auth_table=getattr(self.server, "auth_table", None),
             stats_collector=self.server,
+            ppr_mode=getattr(self.server, "ppr_mode", False),
+            node_to_starts=getattr(self.server, "node_to_starts", None),
         )
         start_ts = time.perf_counter()
         wall_start_epoch = time.time()
@@ -618,6 +661,8 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             request_timeout=getattr(self.server, "request_timeout", 5.0),
             auth_table=getattr(self.server, "auth_table", None),
             stats_collector=self.server,
+            ppr_mode=getattr(self.server, "ppr_mode", False),
+            node_to_starts=getattr(self.server, "node_to_starts", None),
         )
         try:
             res = walker.continue_from_state(state)
@@ -667,6 +712,7 @@ class GraphShardServer(ThreadingHTTPServer):
         self.request_timeout = request_timeout
         # auth_table will be attached by main() if provided
         self.auth_table: Dict[int, Dict[str, Set[Any]]] = {}
+        self.node_to_starts: Dict[NodeOrEdgeId, Set[int]] = {}
 
         # 認可およびアクセスの統計カウンタを初期化
         self.access_counter = Counter()  # 各ノード・エッジへのアクセス回数
@@ -725,6 +771,12 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Optional JSON file path mapping start_node -> allowed entities (n/e).",
     )
+    parser.add_argument(
+        "--node-to-starts-file",
+        type=str,
+        default=None,
+        help="Optional JSON path mapping target_node -> allowed start nodes.",
+    )
     return parser.parse_args()
 
 
@@ -749,6 +801,10 @@ def main() -> None:
     if args.auth_file:
         auth_table = load_entity_auth_table(Path(args.auth_file))
         server.auth_table = auth_table
+    if args.node_to_starts_file:
+        server.node_to_starts = load_node_to_starts_table(
+            Path(args.node_to_starts_file)
+        )
 
     # print(
     #     f"[Server {server.server_id}] Serving {len(shard.local_entities)} entities (nodes + edges) on {args.host}:{args.port} / {args.server_count} servers"
