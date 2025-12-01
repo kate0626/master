@@ -5,6 +5,9 @@ set -euo pipefail
 #  実験設定パート
 #  （すべての数字・ファイルパス・条件はここで定義）
 # ./base/auth-many-server/all.sh 2
+
+# VISIBLE_MODE=0 ./base/auth-many-server/all.sh 2
+# VISIBLE_MODE=1 ./base/auth-many-server/all.sh 2
 ############################################################
 
 ## --- 実行回数設定 ---
@@ -20,6 +23,10 @@ NODE_TO_STARTS_JSON="base/auth-many-server/node_to_starts.json"
 REPO_DIR="./"
 RUNS_DIR="runs"
 LOG_DIR="${RUNS_DIR}/auth"
+VISIBLE_SUFFIX=""
+if [ "${VISIBLE_MODE:-0}" = "1" ]; then
+  VISIBLE_SUFFIX="_visible"
+fi
 
 ## --- サーバ設定 ---
 SERVERS=(
@@ -50,39 +57,20 @@ done
 SERVER_ENDPOINTS_STR="${SERVER_ENDPOINTS[*]}"
 TARGET_LOG="^\\[Server"
 
-# 手で動かしていたコマンドに揃える:
-# python3 base/auth-many-server/remote_server.py \
-#   --server-id 0 --server-count 1 \
-#   --edges dataset/Louvain/graph/karate.gr \
-#   --host 10.58.60.5 --port 3000 \
-#   --server-endpoints 10.58.60.5:3000 \
-#   --auth-file base/auth-many-server/auth_by_start.json \
-#   --node-to-starts-file base/auth-many-server/node_to_starts.json
-REMOTE_CMD_BASE="python3 base/auth-many-server/remote_server.py \
+REMOTE_SERVER_SCRIPT="remote_server.py"
+REMOTE_CMD_BASE="python3 base/auth-many-server/${REMOTE_SERVER_SCRIPT} \
   --server-count ${SERVER_COUNT} \
   --edges ${EDGE_FILE} \
-  --server-endpoints ${SERVER_ENDPOINTS_STR} \
-  --auth-file ${AUTH_JSON} \
-  --node-to-starts-file ${NODE_TO_STARTS_JSON}"
+  --server-endpoints ${SERVER_ENDPOINTS_STR}"
 
-# if (( VISIBLE_MODE )); then
-#   REMOTE_SERVER_SCRIPT="remote_server_visi.py"
-#   REMOTE_CMD_BASE="python3 base/auth-many-server/${REMOTE_SERVER_SCRIPT} \
-#   --server-count ${SERVER_COUNT} \
-#   --edges ${EDGE_FILE} \
-#   --server-endpoints ${SERVER_ENDPOINTS_STR} \
-#   --auth-file ${AUTH_JSON}"
-# else
-#   REMOTE_SERVER_SCRIPT="remote_server.py"
-#   REMOTE_CMD_BASE="python3 base/auth-many-server/${REMOTE_SERVER_SCRIPT} \
-#   --server-count ${SERVER_COUNT} \
-#   --edges ${EDGE_FILE} \
-#   --server-endpoints ${SERVER_ENDPOINTS_STR} \
-#   --node-to-starts-file ${NODE_TO_STARTS_JSON}"
-#   if (( PPR_MODE )); then
-#     REMOTE_CMD_BASE+=" --ppr-mode"
-#   fi
-# fi
+if (( VISIBLE_MODE )); then
+  REMOTE_CMD_BASE+=" --auth-file ${AUTH_JSON} --node-to-starts-file ${NODE_TO_STARTS_JSON}"
+else
+  REMOTE_CMD_BASE+=" --node-to-starts-file ${NODE_TO_STARTS_JSON}"
+  if (( PPR_MODE )); then
+    REMOTE_CMD_BASE+=" --ppr-mode"
+  fi
+fi
 
 ############################################################
 #  関数定義パート
@@ -122,13 +110,12 @@ generate_remote_auth_table() {
   printf -v edge_file_q '%q' "${EDGE_FILE}"
   printf -v auth_json_q '%q' "${NODE_TO_STARTS_JSON}"
   printf -v ratio_q '%q' "${ratio}"
-  remote_cmd="set -euo pipefail; cd ${repo_dir_q}; python3 base/auth-many-server/create_json_table.py ${edge_file_q} -o ${auth_json_q} --ng-ratio ${ratio_q}"
-
-  # extra_flags=""
-  # if (( VISIBLE_MODE )); then
-  #   extra_flags="--emit-auth-table"
-  # fi
-  # remote_cmd="set -euo pipefail; cd ${repo_dir_q}; python3 base/auth-many-server/create_json_table.py ${edge_file_q} -o ${auth_json_q} --ng-ratio ${ratio_q} ${extra_flags}"
+  extra_flags=""
+  if (( VISIBLE_MODE )); then
+    extra_flags="--emit-auth-table"
+    printf -v auth_json_q '%q' "${AUTH_JSON}"
+  fi
+  remote_cmd="set -euo pipefail; cd ${repo_dir_q}; python3 base/auth-many-server/create_json_table.py ${edge_file_q} -o ${auth_json_q} --ng-ratio ${ratio_q} ${extra_flags}"
   printf -v remote_cmd_q '%q' "${remote_cmd}"
   ssh "$host" bash -lc "${remote_cmd_q}"
 }
@@ -174,7 +161,8 @@ for ng_ratio in "${NG_RATIO_LIST[@]}"; do
     for alpha in "${ALPHA_LIST[@]}"; do
       echo ""
       echo "=== [PARAM SET] ng_ratio=${ng_ratio}, walks=${walks}, alpha=${alpha} ==="
-      LOG_FILE="${LOG_DIR}/test/result_ng${ng_ratio_label}_walks${walks}_alpha${alpha}.log"
+      # LOG_FILE="${LOG_DIR}/test/result_ng${ng_ratio_label}_walks${walks}_alpha${alpha}.log"
+      LOG_FILE="${LOG_DIR}/test/${VISIBLE_SUFFIX}result_ng${ng_ratio_label}_walks${walks}_alpha${alpha}.log"
       echo "=== RUN START: walks=${walks}, alpha=${alpha} ===" > "${LOG_FILE}"
 
       durations=()
