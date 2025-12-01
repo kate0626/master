@@ -57,7 +57,12 @@ done
 SERVER_ENDPOINTS_STR="${SERVER_ENDPOINTS[*]}"
 TARGET_LOG="^\\[Server"
 
-REMOTE_SERVER_SCRIPT="remote_server.py"
+if (( VISIBLE_MODE )); then
+  REMOTE_SERVER_SCRIPT="remote_server_visi.py"
+else
+  REMOTE_SERVER_SCRIPT="remote_server.py"
+fi
+
 REMOTE_CMD_BASE="python3 base/auth-many-server/${REMOTE_SERVER_SCRIPT} \
   --server-count ${SERVER_COUNT} \
   --edges ${EDGE_FILE} \
@@ -81,7 +86,7 @@ cleanup() {
   echo ">>> [CLEANUP] 全サーバ停止中..."
   for entry in "${SERVERS[@]}"; do
     eval "$entry"
-    ssh -o ConnectTimeout=5 "$host" "pkill -f base/auth-many-server/remote_server.py || true" >/dev/null 2>&1 || true
+    ssh -o ConnectTimeout=5 "$host" "pkill -f base/auth-many-server/${REMOTE_SERVER_SCRIPT} || true" >/dev/null 2>&1 || true
   done
   echo ">>> [CLEANUP] 完了。"
 }
