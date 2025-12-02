@@ -5,6 +5,15 @@ set -euo pipefail
 #  実験設定パート
 #  （すべての数字・ファイルパス・条件はここで定義）
 # ./base/auth-subgraph-server/all.sh 2
+
+
+# 実行する際の注意点
+
+# START_NODE=ALL ./base/auth-subgraph-server/all.sh 1 
+# 上の最後の回数を固定しないと自動的に沢山回ってしまう
+
+# PPRを求める時には、以下のSTART_NODE=ALL に変更する必要があるので注意！！
+
 ############################################################
 
 ## --- 実行回数設定 ---
@@ -31,10 +40,11 @@ SERVERS=(
 
 ## --- スイープパラメータ設定 ---
 # ここを変えるだけで一括実験条件が変わる！
-WALKS_LIST=(100)
-ALPHA_LIST=(0.01)
+WALKS_LIST=(1)
+ALPHA_LIST=(0.1)
 NG_RATIO_LIST=(0.3)
-START_NODE=1                      # RWの開始ノード
+# ここ変更の必要か
+START_NODE=ALL                  # RWの開始ノード（ALL で全始点PPR）
 DEFAULT_WALKS=10                  # 参考値（controller.pyのデフォルト想定）
 PPR_MODE=1                        # 1 で --ppr-mode を付けて起動
 
@@ -121,7 +131,7 @@ PY
 #  実験実行パート
 ############################################################
 
-mkdir -p "${LOG_DIR}"
+mkdir -p "${LOG_DIR}/test"
 
 # --- パラメータスイープ ---
 for ng_ratio in "${NG_RATIO_LIST[@]}"; do
@@ -144,6 +154,7 @@ for ng_ratio in "${NG_RATIO_LIST[@]}"; do
     for alpha in "${ALPHA_LIST[@]}"; do
       echo ""
       echo "=== [PARAM SET] ng_ratio=${ng_ratio}, walks=${walks}, alpha=${alpha} ==="
+      alpha_label=${alpha//./_}
       LOG_FILE="${LOG_DIR}/test/result_ng${ng_ratio_label}_walks${walks}_alpha${alpha}.log"
       echo "=== RUN START: walks=${walks}, alpha=${alpha} ===" > "${LOG_FILE}"
 
@@ -163,12 +174,26 @@ for ng_ratio in "${NG_RATIO_LIST[@]}"; do
           --server-endpoints "${SERVER_ENDPOINTS[@]}"
           --walks "${walks}"
           --alpha "${alpha}"
-          --start-node "${START_NODE}"
           --seed $((SEED_BASE + run))
         )
 
+        if [[ "${START_NODE}" == "ALL" || "${START_NODE}" == "all" ]]; then
+          CONTROLLER_CMD+=(--start-node-all --subgraph-file "${SUBGRAPH_JSON}")
+        else
+          CONTROLLER_CMD+=(--start-node "${START_NODE}")
+        fi
+
         run_output="$("${CONTROLLER_CMD[@]}" 2>&1)"
         echo "${run_output}" >> "${LOG_FILE}"
+
+        PPR_JSON="${walks}_${alpha}_global_transition.json"
+        if [[ -f "${PPR_JSON}" ]]; then
+          PPR_DEST="${LOG_DIR}/test/ppr_ng${ng_ratio_label}_walks${walks}_alpha${alpha_label}_run${run}.json"
+          cp "${PPR_JSON}" "${PPR_DEST}"
+          echo ">>> [RUN ${run}] PPR JSON saved to ${PPR_DEST}" >> "${LOG_FILE}"
+        else
+          echo ">>> [RUN ${run}] PPR JSON (${PPR_JSON}) が見つかりません" >> "${LOG_FILE}"
+        fi
 
         parsed_line=$(echo "${run_output}" | grep -Eo '\[Controller\] Received [0-9]+ walks in [0-9.]+s\. Avg length: [0-9.]+, total steps: [0-9]+' | tail -n1 || true)
         inner_duration_line=$(echo "${run_output}" | grep -Eo 'duration[[:space:]]+[0-9.]+' | awk '{print $2}' | tail -n1)

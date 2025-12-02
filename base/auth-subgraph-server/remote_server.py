@@ -27,6 +27,19 @@ NodeOrEdgeId = Union[int, str]
     
     python3 base/auth-subgraph-server/remote_server.py --edges ./dataset/Louvain/graph/karate.gr --server-count 1 --server-id 0 --host 10.58.60.5 --port 3000 --server-endpoints 10.58.60.5:3000 --node-to-starts-file base/auth-many-server/node_to_starts.json --subgraph-file base/auth-subgraph-server/subgraph_index.json
 
+
+    [PPRコマンド]
+    python3 base/auth-subgraph-server/remote_server.py \
+    --edges ./dataset/Louvain/graph/karate.gr \
+    --server-count 1 \
+    --server-id 0 \
+    --host 10.58.60.5 \
+    --port 3000 \
+    --server-endpoints 10.58.60.5:3000 \
+    --node-to-starts-file base/auth-many-server/node_to_starts.json \
+    --subgraph-file base/auth-subgraph-server/subgraph_index.json
+
+
 """
 
 
@@ -640,6 +653,7 @@ class PeerWalker:
             print(f"[Server {current_sid}] reached max hops {self.max_hops} → finish")
         else:
             print(f"[Server {current_sid}] stopped by alpha after {hops_done} hops")
+            # print("path", path)
 
         return {
             "finished": True,

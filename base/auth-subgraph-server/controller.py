@@ -6,12 +6,24 @@ import json
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Set
 from urllib import request as urllib_request
 
 """
     auth-many-serverのものと全く同じ
     python3 base/auth-many-server/controller.py --servers 2 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --start-node 1 --walks 100 --alpha 0.1 --seed 42
+    
+    
+    [PPRコマンド]
+    python3 base/auth-subgraph-server/controller.py \
+    --servers 1 \
+    --server-endpoints 10.58.60.5:3000 \
+    --walks 1 \
+    --alpha 0.1 \
+    --seed 42 \
+    --start-node-all \
+    --subgraph-file base/auth-subgraph-server/subgraph_index.json
+
 """
 
 
@@ -26,6 +38,17 @@ def parse_arguments() -> argparse.Namespace:
         "--alpha", default=0.1, type=float, help="Stopping probability."
     )
     parser.add_argument("--start-node", default=1, type=int, help="Start node.")
+    parser.add_argument(
+        "--start-node-all",
+        action="store_true",
+        help="Run walks for every node listed in --subgraph-file instead of only --start-node.",
+    )
+    parser.add_argument(
+        "--subgraph-file",
+        type=str,
+        default=None,
+        help="Path to subgraph_index.json (required when --start-node-all is given).",
+    )
     parser.add_argument("--walks", default=1, type=int, help="Number of walks.")
     parser.add_argument("--seed", default=None, type=int, help="Optional seed.")
     parser.add_argument(
@@ -80,57 +103,131 @@ def fetch_access_stats(endpoint: str, timeout: float) -> Optional[dict]:
 # === 追加ここまで ===
 
 
+def load_start_nodes_from_subgraph(subgraph_path: Path) -> List[int]:
+    """
+    Collect node ids described in the given subgraph JSON.
+    Edge entries (edge_u_v) are skipped.
+    """
+    data = json.loads(subgraph_path.read_text(encoding="utf-8"))
+    nodes: Set[int] = set()
+
+    node_to_group = data.get("node_to_group", {})
+    if isinstance(node_to_group, dict):
+        for entity, _ in node_to_group.items():
+            if isinstance(entity, str) and entity.startswith("edge_"):
+                continue
+            try:
+                nodes.add(int(entity))
+            except (TypeError, ValueError):
+                continue
+
+    groups = data.get("groups", [])
+    if isinstance(groups, dict):
+        group_iter = groups.values()
+    elif isinstance(groups, list):
+        group_iter = groups
+    else:
+        group_iter = []
+
+    for entry in group_iter:
+        if not isinstance(entry, dict):
+            continue
+        for raw_node in entry.get("nodes", []):
+            try:
+                nodes.add(int(raw_node))
+            except (TypeError, ValueError):
+                continue
+
+    return sorted(nodes)
+
+
 def main() -> None:
     args = parse_arguments()
-    # TODO: スタートノードのあるサーバからの開始になっているか確認
-    start_server = args.start_node % args.servers
-    endpoint = args.server_endpoints[start_server]
+    if args.start_node_all:
+        if not args.subgraph_file:
+            raise SystemExit(
+                "--start-node-all requires --subgraph-file to enumerate nodes."
+            )
+        subgraph_path = Path(args.subgraph_file)
+        if not subgraph_path.exists():
+            raise SystemExit(f"Subgraph file not found: {subgraph_path}")
+        start_nodes = load_start_nodes_from_subgraph(subgraph_path)
+        if not start_nodes:
+            raise SystemExit(
+                f"No node entries were found in subgraph file: {subgraph_path}"
+            )
+        print(
+            f"[Controller] Running PPR for all {len(start_nodes)} start nodes defined in {subgraph_path}"
+        )
+    else:
+        start_nodes = [int(args.start_node)]
 
-    payload = {
-        "start_node": int(args.start_node),
-        "alpha": float(args.alpha),
-        "walks": int(args.walks),
-        "seed": args.seed,
-        "endpoints": args.server_endpoints,
-        "server_count": args.servers,
-    }
-
-    t0 = time.perf_counter()
-    # print(
-    #     f"[Controller] Sending /walk to server {start_server} ({endpoint}) with payload: start_node={args.start_node}, alpha={args.alpha}, walks={args.walks}"
-    # )
-    # リクエスト送信
-    res = start_walk_on_server(endpoint, payload, timeout=args.request_timeout)
-    t1 = time.perf_counter()
-    walks = res.get("walks", [])
-    metrics = res.get("metrics", {})
-    duration = metrics.get("duration_sec", res.get("duration"))
-    total_steps = sum(len(w.get("path", [])) for w in walks)
-    avg_len = total_steps / max(1, len(walks))
-    print(
-        f"[Controller] Received {len(walks)} walks in {t1-t0:.3f}s. Avg length: {avg_len:.3f}, total steps: {total_steps}"
-    )
-    if duration is not None:
-        try:
-            duration_val = float(duration)
-        except (TypeError, ValueError):
-            duration_val = None
-        if duration_val is not None:
-            print(f"[Controller] duration {duration_val:.6f}s")
-
-    if metrics:
-        wall_start = metrics.get("wall_start_time")
-        wall_end = metrics.get("wall_end_time")
-        # if wall_start and wall_end:
-        #     print(
-        #         f"[Controller] server wall clock window: {wall_start} -> {wall_end} (epoch {metrics.get('wall_start_epoch')} -> {metrics.get('wall_end_epoch')})"
-        #     )
-
-    # サーバー訪問回数のカウント
+    total_walks = 0
+    total_steps = 0
     server_visits = defaultdict(int)
-    for w in walks:
-        for s in w.get("servers", []):
-            server_visits[s] += 1
+    start_metrics: List[Dict[str, Any]] = []
+
+    for start_node in start_nodes:
+        # TODO: スタートノードのあるサーバからの開始になっているか確認
+        start_server = start_node % args.servers
+        endpoint = args.server_endpoints[start_server]
+
+        payload = {
+            "start_node": int(start_node),
+            "alpha": float(args.alpha),
+            "walks": int(args.walks),
+            "seed": args.seed,
+            "endpoints": args.server_endpoints,
+            "server_count": args.servers,
+        }
+
+        t0 = time.perf_counter()
+        res = start_walk_on_server(endpoint, payload, timeout=args.request_timeout)
+        t1 = time.perf_counter()
+        walks = res.get("walks", [])
+        metrics = res.get("metrics", {})
+        duration = metrics.get("duration_sec", res.get("duration"))
+        steps_this_run = sum(len(w.get("path", [])) for w in walks)
+        avg_len = steps_this_run / max(1, len(walks))
+
+        total_walks += len(walks)
+        total_steps += steps_this_run
+        for w in walks:
+            for s in w.get("servers", []):
+                server_visits[s] += 1
+
+        start_prefix = f"Start {start_node}: " if len(start_nodes) > 1 else ""
+        print(
+            f"[Controller] {start_prefix}Received {len(walks)} walks in {t1-t0:.3f}s. "
+            f"Avg length: {avg_len:.3f}, total steps: {steps_this_run}"
+        )
+        duration_val = None
+        if duration is not None:
+            try:
+                duration_val = float(duration)
+            except (TypeError, ValueError):
+                duration_val = None
+            if duration_val is not None:
+                print(f"[Controller] {start_prefix}duration {duration_val:.6f}s")
+
+        start_metrics.append(
+            {
+                "start_node": start_node,
+                "wall_duration_sec": t1 - t0,
+                "server_duration_sec": duration_val,
+                "walks_completed": len(walks),
+                "total_steps": steps_this_run,
+                "average_length": avg_len,
+            }
+        )
+
+    if len(start_nodes) > 1:
+        overall_avg = total_steps / max(1, total_walks)
+        print(
+            f"[Controller] Aggregated {total_walks} walks across {len(start_nodes)} start nodes. "
+            f"Avg length: {overall_avg:.3f}, total steps: {total_steps}"
+        )
+
     print("Server visit counts:")
     for sid in range(args.servers):
         print(f"  Server {sid}: {server_visits.get(sid, 0)}")
@@ -208,6 +305,14 @@ def main() -> None:
 
     # 結果をファイル保存
     output_filename = f"{args.walks}_{args.alpha}_global_transition.json"
+    aggregate_metrics = {
+        "start_nodes": start_nodes,
+        "total_walks": total_walks,
+        "total_steps": total_steps,
+        "average_length": (total_steps / max(1, total_walks)),
+        "start_node_count": len(start_nodes),
+    }
+
     out = {
         "access": dict(global_access),
         "authorized": dict(global_authorized),
@@ -218,10 +323,34 @@ def main() -> None:
         # ★ 認可時間の集計
         "auth_time_total": total_auth_time,
         "auth_calls": total_auth_calls,
+        "start_node_metrics": start_metrics,
+        "aggregate_metrics": aggregate_metrics,
     }
+
+    total_visits = sum(global_access.values())
+    if total_visits > 0:
+        ppr_scores = {
+            entity: count / total_visits for entity, count in global_access.items()
+        }
+        top_ppr = sorted(
+            ppr_scores.items(), key=lambda kv: kv[1], reverse=True
+        )[: min(10, len(ppr_scores))]
+        print(
+            f"[Controller] PPR computed for {len(ppr_scores)} entities (total visits={total_visits})"
+        )
+        if top_ppr:
+            print("[Controller] Top PPR entities:")
+            for entity, score in top_ppr:
+                visits = global_access.get(entity, 0)
+                print(f"  {entity}: PPR={score:.6f} (visits={visits})")
+    else:
+        ppr_scores = {}
+        print("[Controller] No visits recorded; PPR scores unavailable.")
+    out["total_visits"] = total_visits
+    out["ppr_scores"] = ppr_scores
     out_path = Path(output_filename)
     out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
-    print(f"[Controller] Saved aggregated transition stats to {out_path}")
+    print(f"[Controller] Saved aggregated transition stats (with PPR) to {out_path}")
     # === 追加ここまで ===
 
 
