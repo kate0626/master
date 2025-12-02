@@ -10,6 +10,7 @@ from typing import List, Optional
 from urllib import request as urllib_request
 
 """
+    auth-many-serverのものと全く同じ
     python3 base/auth-many-server/controller.py --servers 2 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --start-node 1 --walks 100 --alpha 0.1 --seed 42
 """
 

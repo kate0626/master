@@ -15,7 +15,8 @@ SEED_BASE=42                      # 乱数シードの基準値
 ## --- ファイル設定 ---
 EDGE_FILE="dataset/Louvain/graph/rt-retweet.gr"
 SUBGRAPH_JSON="base/auth-subgraph-server/subgraph_index.json"
-NODE_TO_STARTS_JSON="base/auth-subgraph-server/node_to_starts.json"
+# NG場所を同じにするために、同じものを使用　
+NODE_TO_STARTS_JSON="base/auth-many-server/node_to_starts.json"
 REPO_DIR="./"
 RUNS_DIR="runs"
 LOG_DIR="${RUNS_DIR}/auth_subgraph"
@@ -89,17 +90,16 @@ timeout ${TIMEOUT}s bash -c \"grep -m1 '${TARGET_LOG}' <(tail -f remote_server.l
 '"
 }
 
-# --- リモートで認可テーブル生成 ---
-generate_remote_auth_table() {
+# --- リモートでサブグラフ定義生成 ---
+generate_remote_subgraph() {
   local host=$1 ratio=$2
-  echo ">>> [${host}] node_to_starts.json を生成中 (ng_ratio=${ratio})..."
-  local repo_dir_q edge_file_q auth_json_q subgraph_json_q ratio_q remote_cmd remote_cmd_q
+  echo ">>> [${host}] subgraph_index.json を生成中 (ng_ratio=${ratio})..."
+  local repo_dir_q edge_file_q subgraph_json_q ratio_q remote_cmd remote_cmd_q
   printf -v repo_dir_q '%q' "${REPO_DIR}"
   printf -v edge_file_q '%q' "${EDGE_FILE}"
-  printf -v auth_json_q '%q' "base/auth-subgraph-server/auth_by_start.json"
   printf -v subgraph_json_q '%q' "${SUBGRAPH_JSON}"
   printf -v ratio_q '%q' "${ratio}"
-  remote_cmd="set -euo pipefail; cd ${repo_dir_q}; python3 base/auth-subgraph-server/create_json_table.py ${edge_file_q} -o ${auth_json_q} --subgraph-out ${subgraph_json_q} --ng-ratio ${ratio_q} --subgraph-size ${SUBGRAPH_SIZE} --seed ${SUBGRAPH_SEED}"
+  remote_cmd="set -euo pipefail; cd ${repo_dir_q}; python3 base/auth-subgraph-server/create_json_table.py ${edge_file_q} --subgraph-out ${subgraph_json_q} --ng-ratio ${ratio_q} --subgraph-size ${SUBGRAPH_SIZE} --seed ${SUBGRAPH_SEED}"
   printf -v remote_cmd_q '%q' "${remote_cmd}"
   ssh "$host" bash -lc "${remote_cmd_q}"
 }
@@ -125,10 +125,10 @@ mkdir -p "${LOG_DIR}"
 
 # --- パラメータスイープ ---
 for ng_ratio in "${NG_RATIO_LIST[@]}"; do
-  echo ">>> 各サーバで node_to_starts.json を再生成中... (ng_ratio=${ng_ratio})"
+  echo ">>> 各サーバで subgraph_index.json を再生成中... (ng_ratio=${ng_ratio})"
   for entry in "${SERVERS[@]}"; do
     eval "$entry"
-    generate_remote_auth_table "$host" "${ng_ratio}"
+    generate_remote_subgraph "$host" "${ng_ratio}"
   done
 
   for entry in "${SERVERS[@]}"; do
