@@ -335,24 +335,52 @@ class PeerWalker:
                     continue
         self.group_members: Dict[int, Dict[str, Set[NodeOrEdgeId]]] = {}
         raw_groups = subgraph_index.get("groups", {})
+
         if isinstance(raw_groups, list):
+            # パターン1: [{"id": ..., "nodes": [...], "edges": [...]}, ...] 形式
             entries = raw_groups
+            for entry in entries:
+                gid = entry.get("id")
+                if gid is None:
+                    continue
+                try:
+                    gid_int = int(gid)
+                except Exception:
+                    continue
+                node_members = set(
+                    int(x) for x in entry.get("nodes", []) if x is not None
+                )
+                edge_members = set(
+                    str(x) for x in entry.get("edges", []) if x is not None
+                )
+                self.group_members[gid_int] = {
+                    "nodes": node_members,
+                    "edges": edge_members,
+                }
+
+        elif isinstance(raw_groups, dict):
+            # パターン2: { gid: {"nodes": [... or set], "edges": [... or set]}, ... } 形式
+            for gid_key, members in raw_groups.items():
+                try:
+                    gid_int = int(gid_key)
+                except Exception:
+                    gid_int = gid_key  # 念のため
+
+                node_members = set(
+                    int(x) for x in members.get("nodes", []) if x is not None
+                )
+                edge_members = set(
+                    str(x) for x in members.get("edges", []) if x is not None
+                )
+                self.group_members[gid_int] = {
+                    "nodes": node_members,
+                    "edges": edge_members,
+                }
+
         else:
-            entries = raw_groups.values()
-        for entry in entries:
-            gid = entry.get("id")
-            if gid is None:
-                continue
-            try:
-                gid_int = int(gid)
-            except Exception:
-                continue
-            node_members = set(int(x) for x in entry.get("nodes", []) if x is not None)
-            edge_members = set(str(x) for x in entry.get("edges", []) if x is not None)
-            self.group_members[gid_int] = {
-                "nodes": node_members,
-                "edges": edge_members,
-            }
+            # 想定外の形式なら空のまま
+            self.group_members = {}
+        # ここまで
         self.granted_groups: Set[int] = set()
         self.denied_groups: Set[int] = set()
         self.ppr_mode = ppr_mode
@@ -373,11 +401,13 @@ class PeerWalker:
             return False
         if isinstance(entity, int):
             allowed_starts = self.node_to_starts.get(entity)
-            print("ノードを認可", allowed_starts)
+            # print("ノードを認可", allowed_starts)
+            # print(bool(allowed_starts and start_node in allowed_starts))
             return bool(allowed_starts and start_node in allowed_starts)
         if isinstance(entity, str):
             allowed_starts = self.node_to_starts.get(entity)
-            print("エッジを認可", allowed_starts)
+            # print("エッジを認可", allowed_starts)
+            # print(bool(allowed_starts and start_node in allowed_starts))
             return bool(allowed_starts and start_node in allowed_starts)
         return False
 
@@ -403,9 +433,9 @@ class PeerWalker:
         if start_node is None:
             return False
         # エンティティが含まれているグループを確認
-        print("現在の線予定のエンティティ", entity)
+        # print("現在の線予定のエンティティ", entity)
         gid = self.entity_to_group.get(entity)
-        print("所属のgroup", gid)
+        # print("所属のgroup", gid)
         if gid is None:
             return None
         # すでに許可・無許可グループの判定が行われている場合は２度目の確認をスキップ可能
@@ -416,14 +446,14 @@ class PeerWalker:
         # そのグループに含まれるすべてのメンバーについて調べる
         members = self.group_members.get(gid, {})
         member_nodes = members.get("nodes", set())
-        print("member構成", member_nodes)
+        # print("member構成", member_nodes)
         member_edges = members.get("edges", set())
-        print("member構成", member_edges)
+        # print("member構成", member_edges)
 
-        print("DEBUG gid=", gid)
-        print("DEBUG group_members keys=", self.group_members.keys())
-        print("DEBUG raw members =", self.group_members.get(gid))
-        print("DEBUG type of members =", type(self.group_members.get(gid)))
+        # print("DEBUG gid=", gid)
+        # print("DEBUG group_members keys=", self.group_members.keys())
+        # print("DEBUG raw members =", self.group_members.get(gid))
+        # print("DEBUG type of members =", type(self.group_members.get(gid)))
 
         allowed = True
         for node in member_nodes:
