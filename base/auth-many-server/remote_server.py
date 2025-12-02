@@ -25,6 +25,7 @@ NodeOrEdgeId = Union[int, str]
     NEW
     python3 base/auth-many-server/remote_server.py   --server-id 0 --server-count 1   --edges dataset/Louvain/graph/karate.gr   --host 10.58.60.5 --port 3000   --server-endpoints 10.58.60.5:3000   --auth-file base/auth-many-server/auth_by_start.json --node-to-starts-file base/auth-many-server/node_to_starts.json
 
+    形式的にauthを渡しているだけで実際にはnode_to_startしか持てていない
 
 """
 
