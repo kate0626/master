@@ -315,6 +315,54 @@ class PeerWalker:
         return [asdict(n) for n in neighbors]
 
     # NOTE: ここが認可アルゴリズムの重要な部分
+    # def _select_next_neighbor(
+    #     self,
+    #     rng: random.Random,
+    #     neighbors: List[Dict[str, Any]],
+    #     start_node: Optional[int],
+    #     current_entity: NodeId,
+    # ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    #     if not neighbors:
+    #         return None, None
+    #     max_retries = len(neighbors) + 3
+    #     next_choice: Optional[Dict[str, Any]] = None
+    #     ## 認可の代替
+    #     # for _ in range(max_retries):
+    #     #     # 認可はスキップ
+    #     #     candidate = rng.choice(neighbors)
+    #     #     next_choice = candidate
+    #     #     break
+    #     # ここまで
+    #     # ここから認可特有のフェーズ
+    #     # 隣接が全部NGになるまで繰り返す
+    #     for _ in range(max_retries):
+    #         self._record_authorization_attempt(current_entity)
+    #         candidate = rng.choice(neighbors)
+    #         # print("cansdate", candidate)
+    #         cid = candidate["node_id"]
+    #         # print(cid)
+    #         t0 = time.perf_counter()
+    #         allowed = self._is_allowed_entity(start_node, cid)
+    #         t1 = time.perf_counter()
+    #         self._record_auth_cost(t1 - t0)
+    #         if allowed:
+    #             next_choice = candidate
+    #             self._record_authorization_success(current_entity, cid)
+    #             break
+    #         self._record_authorization_denial(current_entity)
+
+    #     if next_choice is None:
+    #         print(
+    #             f"[Server {self.shard.server_id}] All {max_retries} neighbors denied → stop"
+    #         )
+    #         denial = {
+    #             "denied": True,
+    #             "denied_reason": f"no authorized neighbors from {current_entity}",
+    #         }
+    #         return None, denial
+    #     # ここまで
+    #     return next_choice, None
+
     def _select_next_neighbor(
         self,
         rng: random.Random,
@@ -324,32 +372,47 @@ class PeerWalker:
     ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         if not neighbors:
             return None, None
-        max_retries = len(neighbors)
+
+        # 「まだ選んでいないものを選ぶ」ために、インデックスをシャッフルして順番に試す
+        indices = list(range(len(neighbors)))
+        rng.shuffle(indices)
+
+        max_retries = len(neighbors)  # ログ用に残しておく
         next_choice: Optional[Dict[str, Any]] = None
-        ## 認可の代替
-        # for _ in range(max_retries):
-        #     # 認可はスキップ
-        #     candidate = rng.choice(neighbors)
+        # 認可は行わず、最初の neighbor をそのまま採用ー＞使用せずにBaseを使用
+        # for idx in indices:
+        #     candidate = neighbors[idx]
+        #     cid = candidate["node_id"]
+
+        #     # 認可カウンタだけは更新（不要なら削除してOK）
+        #     self._record_authorization_attempt(current_entity)
+        #     self._record_authorization_success(current_entity, cid)
+
+        #     # 認可なしなので allowed = True に強制
         #     next_choice = candidate
         #     break
-        # ここまで
-        # ここから認可特有のフェーズ
-        # 隣接が全部NGになるまで繰り返す
-        for _ in range(max_retries):
+        # ここから
+        # 隣接が全部NGになるまで繰り返すが、
+        # 同じ neighbor は二度と選ばない（indices を一度ずつ見る）
+        for idx in indices:
             self._record_authorization_attempt(current_entity)
-            candidate = rng.choice(neighbors)
-            # print("cansdate", candidate)
+
+            candidate = neighbors[idx]
             cid = candidate["node_id"]
-            # print(cid)
+
             t0 = time.perf_counter()
+            # グループ判定込みの認可を使うならこちら
             allowed = self._is_allowed_entity(start_node, cid)
+            # もし _is_allowed_entity を使いたいなら↑を差し替えればOK
             t1 = time.perf_counter()
             self._record_auth_cost(t1 - t0)
+
             if allowed:
                 next_choice = candidate
                 self._record_authorization_success(current_entity, cid)
                 break
-            self._record_authorization_denial(current_entity)
+            else:
+                self._record_authorization_denial(current_entity)
 
         if next_choice is None:
             print(
@@ -361,6 +424,7 @@ class PeerWalker:
             }
             return None, denial
         # ここまで
+
         return next_choice, None
 
     def _post_continue(self, server_id: int, state: dict) -> dict:
