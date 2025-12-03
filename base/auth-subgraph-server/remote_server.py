@@ -321,7 +321,6 @@ class PeerWalker:
         auth_table: Optional[Dict[int, Dict[str, Set[str]]]] = None,
         stats_collector: Optional[Any] = None,
         subgraph_index: Optional[Dict[str, Any]] = None,  # 追加
-        ppr_mode: bool = False,
         node_to_starts: Optional[Dict[NodeOrEdgeId, Set[int]]] = None,
     ):
         self.shard = shard
@@ -396,7 +395,6 @@ class PeerWalker:
         # ここまで
         self.granted_groups: Set[int] = set()
         self.denied_groups: Set[int] = set()
-        self.ppr_mode = ppr_mode
         self.node_to_starts: Dict[NodeOrEdgeId, Set[int]] = node_to_starts or {}
 
     # --- Authorization helpers ---------------------------------------------
@@ -431,6 +429,8 @@ class PeerWalker:
         self.denied_groups = {int(g) for g in denied}
 
     def _group_state_payload(self) -> Dict[str, List[int]]:
+        if not self.entity_to_group:
+            return {}
         return {
             "granted_groups": sorted(self.granted_groups),
             "denied_groups": sorted(self.denied_groups),
@@ -459,9 +459,9 @@ class PeerWalker:
         # そのグループに含まれるすべてのメンバーについて調べる
         members = self.group_members.get(gid, {})
         member_nodes = members.get("nodes", set())
-        # print("member構成", member_nodes)
+        print("member構成", member_nodes)
         member_edges = members.get("edges", set())
-        # print("member構成", member_edges)
+        print("member構成", member_edges)
 
         # print("DEBUG gid=", gid)
         # print("DEBUG group_members keys=", self.group_members.keys())
@@ -514,28 +514,22 @@ class PeerWalker:
     ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         if not neighbors:
             return None, None
+        indices = list(range(len(neighbors)))
+        rng.shuffle(indices)
+
         max_retries = len(neighbors)
         next_choice: Optional[Dict[str, Any]] = None
-        ## 認可の代替
-        # for _ in range(max_retries):
-        #     # 認可はスキップ
-        #     candidate = rng.choice(neighbors)
-        #     next_choice = candidate
-        #     break
-        # ここまで
-        # ここから認可特有のフェーズ
-        # 隣接が全部NGになるまで繰り返す
-        for _ in range(max_retries):
-            # 候補の選択
+
+        for idx in indices:
             self._record_authorization_attempt(current_entity)
-            candidate = rng.choice(neighbors)
+            candidate = neighbors[idx]
             cid = candidate["node_id"]
+
             t0 = time.perf_counter()
-            # ここで認可の確認
             allowed = self._is_entity_authorized(start_node, cid)
             t1 = time.perf_counter()
             self._record_auth_cost(t1 - t0)
-            # 許可されていたら許可グループに設置、拒否されたら繰り返し行う
+
             if allowed:
                 next_choice = candidate
                 self._record_authorization_success(current_entity, cid)
@@ -584,19 +578,7 @@ class PeerWalker:
         self._load_group_cache(state)
 
         self._record_entity_visit(current_entity)
-        # 終了確率をクリアした時にのみ遷移
-        while hops_done < self.max_hops:
-            if self.ppr_mode:
-                if rng.random() <= alpha:
-                    if start_node is None:
-                        break
-                    current_entity = start_node
-                    path.append(start_node)
-                    servers.append(current_sid)
-                    continue
-            else:
-                if rng.random() <= alpha:
-                    break
+        while hops_done < self.max_hops and rng.random() > alpha:
             hops_done += 1
             owner = self.shard.partitioner.assign_entity(current_entity)
             if owner != current_sid:
@@ -613,7 +595,6 @@ class PeerWalker:
                 return self._post_continue(owner, state_out)
 
             neighbors = self._get_local_neighbors(current_entity)
-            # あるノードが認可を通るか→通るまで繰り返す
             next_choice, denial_payload = self._select_next_neighbor(
                 rng, neighbors, start_node, current_entity
             )
@@ -653,7 +634,6 @@ class PeerWalker:
             print(f"[Server {current_sid}] reached max hops {self.max_hops} → finish")
         else:
             print(f"[Server {current_sid}] stopped by alpha after {hops_done} hops")
-            # print("path", path)
 
         return {
             "finished": True,
@@ -814,14 +794,16 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             auth_table=getattr(self.server, "auth_table", None),
             stats_collector=self.server,
             subgraph_index=getattr(self.server, "subgraph_index", None),
-            ppr_mode=getattr(self.server, "ppr_mode", False),
             node_to_starts=getattr(self.server, "node_to_starts", None),
         )
         start_ts = time.perf_counter()
         wall_start_epoch = time.time()
         wall_start_iso = now_iso()
         results = []
+        propagate_group_state = bool(walker.entity_to_group)
         for i in range(walks):
+            walker.granted_groups = set()
+            walker.denied_groups = set()
             rng = random.Random(seed if seed is None else (seed + i))
             initial_state = {
                 "start_node": int(start_node),
@@ -831,9 +813,10 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
                 "alpha": float(alpha),
                 "rng_state": serialize_rng_state(rng),
                 "hops_done": 0,
-                "granted_groups": [],
-                "denied_groups": [],
             }
+            if propagate_group_state:
+                initial_state["granted_groups"] = []
+                initial_state["denied_groups"] = []
             res = walker.continue_from_state(initial_state)
             results.append(res)
             # time.sleep(0.01)
@@ -876,7 +859,6 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             auth_table=getattr(self.server, "auth_table", None),
             stats_collector=self.server,
             subgraph_index=getattr(self.server, "subgraph_index", None),
-            ppr_mode=getattr(self.server, "ppr_mode", False),
             node_to_starts=getattr(self.server, "node_to_starts", None),
         )
         try:
