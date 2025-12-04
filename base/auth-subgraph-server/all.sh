@@ -22,14 +22,14 @@ TIMEOUT=10                        # サーバ起動待機の最大時間 [秒]
 SEED_BASE=42                      # 乱数シードの基準値
 
 ## --- ファイル設定 ---
-EDGE_FILE="dataset/Louvain/graph/rt-retweet.gr"
+EDGE_FILE="dataset/Louvain/graph/karate.gr"
 SUBGRAPH_JSON="base/auth-subgraph-server/subgraph_index.json"
 # NG場所を同じにするために、同じものを使用　
 NODE_TO_STARTS_JSON="base/auth-many-server/node_to_starts.json"
 REPO_DIR="./"
 RUNS_DIR="runs"
 LOG_DIR="${RUNS_DIR}/auth_subgraph"
-SUBGRAPH_SIZE=5                   # サブグラフの最大ノード数
+SUBGRAPH_SIZE=10                  # サブグラフの最大ノード数
 SUBGRAPH_SEED=2024                # サブグラフ生成＆NG割り当て用シード
 
 ## --- サーバ設定 ---
@@ -40,13 +40,13 @@ SERVERS=(
 
 ## --- スイープパラメータ設定 ---
 # ここを変えるだけで一括実験条件が変わる！
-WALKS_LIST=(1)
-ALPHA_LIST=(0.1)
+WALKS_LIST=(10)
+ALPHA_LIST=(0.01)
 NG_RATIO_LIST=(0.3)
 # ここ変更の必要か
 START_NODE=ALL                  # RWの開始ノード（ALL で全始点PPR）
 DEFAULT_WALKS=10                  # 参考値（controller.pyのデフォルト想定）
-PPR_MODE=1                        # 1 で --ppr-mode を付けて起動
+PPR_MODE=0                        # 旧PPRモードは無効化（baselineと同じ挙動）
 
 ############################################################
 #  実行前の準備パート
@@ -155,7 +155,7 @@ for ng_ratio in "${NG_RATIO_LIST[@]}"; do
       echo ""
       echo "=== [PARAM SET] ng_ratio=${ng_ratio}, walks=${walks}, alpha=${alpha} ==="
       alpha_label=${alpha//./_}
-      LOG_FILE="${LOG_DIR}/test/result_ng${ng_ratio_label}_walks${walks}_alpha${alpha}.log"
+      LOG_FILE="${LOG_DIR}/test/${SUBGRAPH_SIZE}_result_ng${ng_ratio_label}_walks${walks}_alpha${alpha}.log"
       echo "=== RUN START: walks=${walks}, alpha=${alpha} ===" > "${LOG_FILE}"
 
       durations=()

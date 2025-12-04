@@ -6,7 +6,7 @@ import json
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Set
 from urllib import request as urllib_request
 
 """
@@ -16,13 +16,14 @@ from urllib import request as urllib_request
     python3 base/auth-many-server/controller_ppr.py \
     --servers 1 \
     --server-endpoints 10.58.60.5:3000 \
-    --walks 100 \
-    --alpha 0.1 \
+    --walks 10 \
+    --alpha 0.01 \
     --node-to-starts-file  base/auth-many-server/node_to_starts.json
 """
 
 
 def parse_arguments() -> argparse.Namespace:
+
     parser = argparse.ArgumentParser(
         description="PPR controller that runs random walks from every permitted start node."
     )
@@ -46,14 +47,25 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--node-to-starts-file",
         type=str,
-        required=True,
+        default="base/auth-many-server/node_to_starts.json",
         help="Path to node_to_starts.json (defines which start nodes exist).",
+    )
+    parser.add_argument(
+        "--subgraph-file",
+        type=str,
+        default=None,
+        help="Optional subgraph_index.json used to enumerate start nodes when --start-node-all is set.",
     )
     parser.add_argument(
         "--start-node",
         type=int,
         default=None,
-        help="If specified, run PPR only from this start node instead of all nodes in node-to-starts file.",
+        help="If specified, run PPR only from this start node.",
+    )
+    parser.add_argument(
+        "--start-node-all",
+        action="store_true",
+        help="Run PPR for every node listed in --subgraph-file (requires the file).",
     )
     return parser.parse_args()
 
@@ -92,15 +104,61 @@ def load_start_nodes(mapping_path: Path) -> List[int]:
     return nodes
 
 
+def load_nodes_from_subgraph(subgraph_path: Path) -> List[int]:
+    data = json.loads(subgraph_path.read_text(encoding="utf-8"))
+    nodes: Set[int] = set()
+
+    node_to_group = data.get("node_to_group", {})
+    if isinstance(node_to_group, dict):
+        for entity, _ in node_to_group.items():
+            if isinstance(entity, str) and entity.startswith("edge_"):
+                continue
+            try:
+                nodes.add(int(entity))
+            except (TypeError, ValueError):
+                continue
+
+    groups = data.get("groups", [])
+    if isinstance(groups, dict):
+        group_iter = groups.values()
+    elif isinstance(groups, list):
+        group_iter = groups
+    else:
+        group_iter = []
+
+    for entry in group_iter:
+        if not isinstance(entry, dict):
+            continue
+        for raw_node in entry.get("nodes", []):
+            try:
+                nodes.add(int(raw_node))
+            except (TypeError, ValueError):
+                continue
+    return sorted(nodes)
+
+
 def main() -> None:
     args = parse_arguments()
-    mapping_path = Path(args.node_to_starts_file)
-    if not mapping_path.exists():
-        raise SystemExit(f"node_to_starts file not found: {mapping_path}")
+    if args.start_node is not None and args.start_node_all:
+        raise SystemExit("--start-node and --start-node-all cannot be used together.")
 
     if args.start_node is not None:
         start_nodes = [int(args.start_node)]
+    elif args.start_node_all:
+        if not args.subgraph_file:
+            raise SystemExit("--start-node-all requires --subgraph-file to be set.")
+        subgraph_path = Path(args.subgraph_file)
+        if not subgraph_path.exists():
+            raise SystemExit(f"Subgraph file not found: {subgraph_path}")
+        start_nodes = load_nodes_from_subgraph(subgraph_path)
+        if not start_nodes:
+            raise SystemExit(
+                f"No node entries were found in subgraph file: {subgraph_path}"
+            )
     else:
+        mapping_path = Path(args.node_to_starts_file)
+        if not mapping_path.exists():
+            raise SystemExit(f"node_to_starts file not found: {mapping_path}")
         start_nodes = load_start_nodes(mapping_path)
         if not start_nodes:
             raise SystemExit(
@@ -211,8 +269,28 @@ def main() -> None:
         failures = global_denied.get(entity, 0)
         failure_rates[entity] = failures / attempts if attempts else 0.0
 
+    total_attempts = sum(global_attempts.values())
+    total_denied = sum(global_denied.values())
+    if total_attempts:
+        failure_rate = total_denied / total_attempts
+        print(
+            f"[ControllerPPR] Authorization totals: attempts={total_attempts}, "
+            f"failures={total_denied} ({failure_rate:.2%})"
+        )
+        sorted_entities = sorted(
+            failure_rates.items(), key=lambda kv: kv[1], reverse=True
+        )
+        if sorted_entities:
+            print("[ControllerPPR] Failure rate per entity (降順、全件):")
+            for entity, rate in sorted_entities:
+                attempts = global_attempts.get(entity, 0)
+                failures = global_denied.get(entity, 0)
+                print(f"  {entity}: {failures}/{attempts} failures ({rate:.2%})")
+
     # ファイルへの保存
-    output_filename = f"PPR_{args.walks}_{args.alpha}_global_transition.json"
+    output_filename = (
+        f"./runs/auth/test/PPR_{args.walks}_{args.alpha}_global_transition.log"
+    )
     aggregate_metrics = {
         "start_nodes": start_nodes,
         "start_node_count": len(start_nodes),
@@ -243,6 +321,14 @@ def main() -> None:
         print(
             f"[ControllerPPR] Computed PPR for {len(ppr_scores)} entities (total visits={total_visits})"
         )
+        top_ppr = sorted(ppr_scores.items(), key=lambda kv: kv[1], reverse=True)[
+            : min(10, len(ppr_scores))
+        ]
+        if top_ppr:
+            print("[ControllerPPR] Top PPR entities:")
+            for entity, score in top_ppr:
+                visits = global_access.get(entity, 0)
+                print(f"  {entity}: PPR={score:.6f} (visits={visits})")
     else:
         out["total_visits"] = 0
         out["ppr_scores"] = {}
