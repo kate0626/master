@@ -162,6 +162,8 @@ def main() -> None:
     else:
         start_nodes = [int(args.start_node)]
 
+    walk_phase_wall_start = time.perf_counter()
+    walk_phase_wall_start_epoch = time.time()
     total_walks = 0
     total_steps = 0
     server_visits = defaultdict(int)
@@ -221,6 +223,9 @@ def main() -> None:
             }
         )
 
+    walk_phase_wall_end = time.perf_counter()
+    walk_phase_wall_end_epoch = time.time()
+
     if len(start_nodes) > 1:
         overall_avg = total_steps / max(1, total_walks)
         print(
@@ -231,6 +236,21 @@ def main() -> None:
     print("Server visit counts:")
     for sid in range(args.servers):
         print(f"  Server {sid}: {server_visits.get(sid, 0)}")
+
+    server_duration_sum = sum(
+        float(m["server_duration_sec"])
+        for m in start_metrics
+        if m.get("server_duration_sec") is not None
+    )
+    walk_phase_wall_duration = walk_phase_wall_end - walk_phase_wall_start
+    avg_wall_per_start = walk_phase_wall_duration / max(1, len(start_nodes))
+    print(
+        "[Controller] PPR timing: "
+        f"wall={walk_phase_wall_duration:.3f}s, "
+        f"per_start={avg_wall_per_start:.3f}s, "
+        f"server_sum={server_duration_sum:.3f}s "
+        f"(start_nodes={len(start_nodes)})"
+    )
 
     # optionally print each walk
     # for i, w in enumerate(walks):
@@ -313,6 +333,15 @@ def main() -> None:
         "start_node_count": len(start_nodes),
     }
 
+    timing_summary = {
+        "start_node_count": len(start_nodes),
+        "walk_phase_wall_time_sec": walk_phase_wall_duration,
+        "walk_phase_wall_start_epoch": walk_phase_wall_start_epoch,
+        "walk_phase_wall_end_epoch": walk_phase_wall_end_epoch,
+        "per_start_wall_time_sec": avg_wall_per_start,
+        "server_duration_sum_sec": server_duration_sum,
+    }
+
     out = {
         "access": dict(global_access),
         "authorized": dict(global_authorized),
@@ -325,6 +354,7 @@ def main() -> None:
         "auth_calls": total_auth_calls,
         "start_node_metrics": start_metrics,
         "aggregate_metrics": aggregate_metrics,
+        "timing_summary": timing_summary,
     }
 
     total_visits = sum(global_access.values())

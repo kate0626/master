@@ -11,9 +11,9 @@ python3 base/auth-subgraph-server/create_json_table.py ./dataset/Louvain/graph/k
 グループ分けのみ作る場合
 python3 base/auth-subgraph-server/create_json_table.py \
     dataset/Louvain/graph/karate.gr \
-    --ng-ratio 0.0 \
+    --ng-ratio 0.3 \
     --subgraph-out base/auth-subgraph-server/subgraph_index.json \
-    --subgraph-size 5 \
+    --subgraph-size 1 \
     --seed 202
 
 """
@@ -273,6 +273,7 @@ def main():
         random.seed(args.seed)
 
     edges = read_edge_list(edge_path)
+    graph_label = edge_path.stem
     auth = build_auth_table2(edges, ng_ratio=args.ng_ratio)
 
     # ★ 固定出力先フォルダ（プロジェクトルートからの相対パス）
@@ -295,13 +296,24 @@ def main():
         )
     else:
         node_to_starts_path = None
+    group_count = 0
+    subgraph_written_path: Optional[Path] = None
     if args.subgraph_out:
         groups = build_connected_groups(edges, args.subgraph_size, seed=args.seed)
         subgraph_index = build_subgraph_index(edges, groups)
+        group_count = len(subgraph_index.get("groups", []))
         subgraph_path = Path(args.subgraph_out)
-        subgraph_path.write_text(
-            json.dumps(subgraph_index, indent=2, ensure_ascii=False), encoding="utf-8"
+        base_name = subgraph_path.stem
+        safe_graph_label = "".join(
+            c if c.isalnum() or c in ("-", "_") else "_" for c in graph_label
         )
+        meta_filename = f"{base_name}_{safe_graph_label}_groups{group_count}_size{args.subgraph_size}.json"
+        meta_path = subgraph_path.with_name(meta_filename)
+        json_text = json.dumps(subgraph_index, indent=2, ensure_ascii=False)
+        meta_path.write_text(json_text, encoding="utf-8")
+        subgraph_written_path = meta_path
+        if meta_path.resolve() != subgraph_path.resolve():
+            subgraph_path.write_text(json_text, encoding="utf-8")
     else:
         subgraph_path = None
 
@@ -310,13 +322,16 @@ def main():
         summary_parts.append(str(node_to_starts_path))
     if out_path is not None:
         summary_parts.append(str(out_path))
-    if subgraph_path is not None:
-        summary_parts.append(str(subgraph_path))
+    if subgraph_written_path is not None:
+        summary_parts.append(str(subgraph_written_path))
     if summary_parts:
         summary = "Wrote " + ", ".join(summary_parts)
     else:
         summary = "No JSON files emitted"
-    summary += f" with {len(auth)} start entries (NG ratio={args.ng_ratio})."
+    summary += (
+        f" with {len(auth)} start entries (NG ratio={args.ng_ratio}) "
+        f"[graph={graph_label}, groups={group_count}, subgraph_size<={args.subgraph_size}]"
+    )
     print(summary)
 
 
