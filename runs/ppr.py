@@ -163,16 +163,58 @@ import numpy as np
 """
 
 # 個別ファイル指定
+
+# グループを作成した時のPPR：PPRの劣化を示した
+# log_files = {
+#     # 上が基盤、二番目がグループ＝１にした時なので実質同じ
+#     "base_1": "auth/test/PPR_100_0.1_global_transition.log",
+#     "subgraph_1": "auth_subgraph/test/exp2-ppr/1_result_ng0_3_walks10_alpha0.01.log",
+#     "subgraph_2": "auth_subgraph/test/exp2-ppr/2_result_ng0_3_walks10_alpha0.01.log",
+#     "subgraph_4": "auth_subgraph/test/exp2-ppr/4_result_ng0_3_walks10_alpha0.01.log",
+#     "subgraph_6": "auth_subgraph/test/exp2-ppr/6_result_ng0_3_walks10_alpha0.01.log",
+#     "subgraph_8": "auth_subgraph/test/exp2-ppr/8_result_ng0_3_walks10_alpha0.01.log",
+#     "subgraph_10": "auth_subgraph/test/exp2-ppr/10_result_ng0_3_walks10_alpha0.01.log",
+# }
+
+
+# A0: PPRにおいて、サイズが同じそれぞれは一致してほしい
+# log_files = {
+#     "base_1": "auth/test/PPR_100_0.1_global_transition.log",
+#     "subgraph_1": "auth_subgraph/test/exp2-ppr/1_result_ng0_3_walks10_alpha0.01.log",
+#     "size_1": "visit_count/test/hot=10000/visit_karate_size1_walks100_alpha0_01.log",
+#     "size_2": "visit_count/test/hot=10000/visit_karate_size2_walks100_alpha0_01.log",
+#     "subgraph_2": "auth_subgraph/test/exp2-ppr/2_result_ng0_3_walks10_alpha0.01.log",
+#     "size_4": "visit_count/test/hot=10000/visit_karate_size4_walks100_alpha0_01.log",
+#     "subgraph_4": "auth_subgraph/test/exp2-ppr/4_result_ng0_3_walks10_alpha0.01.log",
+#     "size_6": "visit_count/test/hot=10000/visit_karate_size6_walks100_alpha0_01.log",
+#     "subgraph_6": "auth_subgraph/test/exp2-ppr/6_result_ng0_3_walks10_alpha0.01.log",
+#     "size_8": "visit_count/test/hot=10000/visit_karate_size8_walks100_alpha0_01.log",
+#     "subgraph_8": "auth_subgraph/test/exp2-ppr/8_result_ng0_3_walks10_alpha0.01.log",
+# }
 log_files = {
+    # 上が基盤、二番目がグループ＝１にした時なので実質同じ
     "base_1": "auth/test/PPR_100_0.1_global_transition.log",
-    "subgraph_1": "auth_subgraph/test/1_result_ng0_3_walks10_alpha0.01.log",
-    "subgraph_2": "auth_subgraph/test/2_result_ng0_3_walks10_alpha0.01.log",
-    "subgraph_4": "auth_subgraph/test/4_result_ng0_3_walks10_alpha0.01.log",
-    "subgraph_6": "auth_subgraph/test/6_result_ng0_3_walks10_alpha0.01.log",
-    "subgraph_8": "auth_subgraph/test/8_result_ng0_3_walks10_alpha0.01.log",
-    "subgraph_10": "auth_subgraph/test/10_result_ng0_3_walks10_alpha0.01.log",
+    "size_1": "visit_count/test/hot=10000/visit_karate_size1_walks100_alpha0_01.log",
+    "size_2": "visit_count/test/hot=10000/visit_karate_size2_walks100_alpha0_01.log",
+    "size_4": "visit_count/test/hot=10000/visit_karate_size4_walks100_alpha0_01.log",
+    "size_6": "visit_count/test/hot=10000/visit_karate_size6_walks100_alpha0_01.log",
+    "size_8": "visit_count/test/hot=10000/visit_karate_size8_walks100_alpha0_01.log",
+    "size_10": "visit_count/test/hot=10000/visit_karate_size10_walks100_alpha0_01.log",
 }
 
+# # A1: Hot=2で作動するときにPPRが改善して、サブグラフ＝１のベースに近づくことを示した
+# log_files = {
+#     # 上が基盤、二番目がグループ＝１にした時なので実質同じ
+#     "base_1": "auth/test/PPR_100_0.1_global_transition.log",
+#     "size_1": "visit_count/test/hot=2/visit_karate_size1_walks100_alpha0_01.log",
+#     "size_2": "visit_count/test/hot=2/visit_karate_size2_walks100_alpha0_01.log",
+#     "size_4": "visit_count/test/hot=2/visit_karate_size4_walks100_alpha0_01.log",
+#     "size_6": "visit_count/test/hot=2/visit_karate_size6_walks100_alpha0_01.log",
+#     "size_8": "visit_count/test/hot=2/visit_karate_size8_walks100_alpha0_01.log",
+#     "size_10": "visit_count/test/hot=2/visit_karate_size10_walks100_alpha0_01.log",
+# }
+
+## TODO：変更
 EDGE_FILE = "./../dataset/Louvain/graph/karate.gr"
 
 # PPR の行抽出用
@@ -271,6 +313,38 @@ def main():
         vmax=ppr_max,
     )
     # ここまで
+
+    # 定量化ここから
+    labels = list(log_files.keys())
+    base_idx = labels.index("base_1")
+
+    # 念のため：各列を確率分布になるように正規化（合計が1になるように）
+    probs = heat_matrix.copy().astype(float)
+    col_sums = probs.sum(axis=0, keepdims=True)
+    # ゼロ割り防止
+    col_sums[col_sums == 0] = 1.0
+    probs /= col_sums
+
+    base_vec = probs[:, base_idx]
+
+    def total_variation(p, q):
+        return 0.5 * np.sum(np.abs(p - q))
+
+    def topk_overlap(p, q, k=10):
+        top_p = set(np.argsort(-p)[:k])
+        top_q = set(np.argsort(-q)[:k])
+        return len(top_p & top_q) / float(k)
+
+    print("=== Base1 と各設定の PPR 劣化指標 ===")
+    print("name\tTV\tOverlap@10")
+    for j, name in enumerate(labels):
+        if j == base_idx:
+            continue
+        v = probs[:, j]
+        tv = total_variation(base_vec, v)
+        ov10 = topk_overlap(base_vec, v, k=10)
+        print(f"{name}\t{tv:.4e}\t{ov10:.2f}")
+    # 定量化ここまで
 
     plt.colorbar(label="PPR value")
 
