@@ -18,7 +18,7 @@ from urllib import request as urllib_request
     python3 base/sub-visit-count/controller.py \
     --servers 1 \
     --server-endpoints 10.58.60.6:3000 \
-    --walks 1 \
+    --walks 100 \
     --alpha 0.1 \
     --seed 42 \
     --start-node-all \
@@ -59,6 +59,18 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--request-timeout", default=10.0, type=float, help="HTTP timeout seconds."
+    )
+    parser.add_argument(
+        "--warmup-ratio",
+        type=float,
+        default=None,
+        help="Fraction of walks used as warmup before hot subgraph detection (optional).",
+    )
+    parser.add_argument(
+        "--hot-min-visits",
+        type=int,
+        default=None,
+        help="Minimum visits before treating a subgraph as hot (optional).",
     )
     return parser.parse_args()
 
@@ -183,6 +195,10 @@ def main() -> None:
             "endpoints": args.server_endpoints,
             "server_count": args.servers,
         }
+        if args.warmup_ratio is not None:
+            payload["warmup_ratio"] = float(args.warmup_ratio)
+        if args.hot_min_visits is not None:
+            payload["hot_min_visits"] = int(args.hot_min_visits)
 
         t0 = time.perf_counter()
         res = start_walk_on_server(endpoint, payload, timeout=args.request_timeout)

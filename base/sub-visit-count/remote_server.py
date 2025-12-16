@@ -18,6 +18,11 @@ from datetime import datetime, timezone
 NodeId = Union[int, str]
 NodeOrEdgeId = Union[int, str]
 
+# ホットサブグラフ判定に使うデフォルト値
+DEFAULT_WARMUP_RATIO = 0.5  # 全ウォークのうち何割をウォームアップとして使うか
+DEFAULT_HOT_MIN_VISITS = 2  # ホット扱いするグループ訪問回数しきい値
+
+
 """
   単一サーバでも分散でも動くが、ここでは主に server-count=1 を想定。
 
@@ -29,8 +34,11 @@ NodeOrEdgeId = Union[int, str]
       --host 10.58.60.6 \
       --port 3000 \
       --server-endpoints 10.58.60.6:3000 \
-      --node-to-starts-file base/auth-many-server/node_to_starts.json \
-      --subgraph-file base/auth-subgraph-server/subgraph_index_karate_size6.json
+      --node-to-starts-file base/auth-many-server/karate/node_to_starts.json \
+      --subgraph-file base/auth-subgraph-server/subgraph_index_karate_size6.json \
+      --warmup-ratio 0.3 \
+      --hot-min-visits 3
+
 """
 
 
@@ -309,8 +317,8 @@ class PeerWalker:
         stats_collector: Optional[Any] = None,
         subgraph_index: Optional[Dict[str, Any]] = None,
         node_to_starts: Optional[Dict[NodeOrEdgeId, Set[int]]] = None,
-        warmup_walks: int = 0,  # ★★ 追加: ウォームアップとして扱うウォーク本数
-        hot_min_visits: int = 2,  # ★★ 追加: あるグループがホットとみなされる訪問回数
+        warmup_walks: int = 0,  # ★★ ウォームアップとして扱うウォーク本数
+        hot_min_visits: int = DEFAULT_HOT_MIN_VISITS,  # ★★ あるグループがホットとみなされる訪問回数
     ):
         self.shard = shard
         self.endpoints = [
@@ -442,6 +450,9 @@ class PeerWalker:
         グループ丸ごと認可を行う。
         ただし、ホットサブグラフに対しては後段でスキップする（_is_entity_authorizedを参照）。
         """
+        print(
+            f"[GROUP]Evaluating group access for entity {entity} with start_node {start_node}"
+        )
         if start_node is None:
             return False
         gid = self.entity_to_group.get(entity)
@@ -500,6 +511,9 @@ class PeerWalker:
         group_result = self._evaluate_group_access(start_node, entity)
         if group_result is None:
             # グループに属していない or 定義なし → 個別認可
+            print(
+                f"[FALLBACK] Entity {entity} not in any group グループに属さないので個別で認可を行う"
+            )
             return self._is_allowed_entity(start_node, entity)
         return bool(group_result)
 
@@ -683,6 +697,10 @@ class PeerWalker:
         gid = self.entity_to_group.get(entity_id)
         if gid is not None:
             self.group_visit_counter[gid] += 1
+            # 訪問回数をチェック
+            print(
+                f"[VISIT] Entity {entity_id} in group {gid} visited {self.group_visit_counter[gid]} times"
+            )
 
             # ウォームアップ区間を過ぎていて、かつ一定回数以上出現しているグループをホット扱い
             if (
@@ -802,10 +820,29 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         )
 
         # ★★ ここで「1回の実行の中でホットサブグラフを作る」設定を決める
-        #  例: 最初の 10% の RW をウォームアップとして使う
-        warmup_walks = max(0, walks // 10)
-        ## TODO: ここで決めることができる、動的に全体の１０％とかしてもいいかも
-        hot_min_visits = 10000  # そのグループが 2 回以上登場したらホット扱い
+        warmup_ratio = max(
+            0.0,
+            float(
+                params.get(
+                    "warmup_ratio",
+                    getattr(self.server, "warmup_ratio", DEFAULT_WARMUP_RATIO),
+                )
+            ),
+        )
+        warmup_walks = max(0, min(walks, int(walks * warmup_ratio)))
+        hot_min_visits = max(
+            1,
+            int(
+                params.get(
+                    "hot_min_visits",
+                    getattr(self.server, "hot_min_visits", DEFAULT_HOT_MIN_VISITS),
+                )
+            ),
+        )
+        # Continue API でも同じ値を使えるようにサーバ側へも保存
+        self.server.warmup_walks = warmup_walks
+        self.server.hot_min_visits = hot_min_visits
+        self.server.warmup_ratio = warmup_ratio
 
         walker = PeerWalker(
             self.server.shard,
@@ -926,6 +963,8 @@ class GraphShardServer(ThreadingHTTPServer):
         shard: GraphShard,
         endpoints: Sequence[str],
         request_timeout: float = 5.0,
+        warmup_ratio: float = DEFAULT_WARMUP_RATIO,
+        hot_min_visits: int = DEFAULT_HOT_MIN_VISITS,
     ) -> None:
         super().__init__((host, port), EdgeAwareHandler)
         self.shard = shard
@@ -950,7 +989,8 @@ class GraphShardServer(ThreadingHTTPServer):
         self.group_visit_counter = Counter()
         self.hot_groups: Set[int] = set()
         self.warmup_walks = 0
-        self.hot_min_visits = 2
+        self.hot_min_visits = max(1, int(hot_min_visits))
+        self.warmup_ratio = max(0.0, float(warmup_ratio))
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -1015,6 +1055,18 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Optional JSON path mapping target_node -> allowed start nodes.",
     )
+    parser.add_argument(
+        "--warmup-ratio",
+        type=float,
+        default=DEFAULT_WARMUP_RATIO,
+        help="Fraction of walks used as warmup before hot subgraph detection.",
+    )
+    parser.add_argument(
+        "--hot-min-visits",
+        type=int,
+        default=DEFAULT_HOT_MIN_VISITS,
+        help="Minimum visits to a subgraph before treating it as hot.",
+    )
     return parser.parse_args()
 
 
@@ -1032,6 +1084,8 @@ def main() -> None:
         shard=shard,
         endpoints=args.server_endpoints,
         request_timeout=args.request_timeout,
+        warmup_ratio=args.warmup_ratio,
+        hot_min_visits=args.hot_min_visits,
     )
 
     if args.auth_file:
