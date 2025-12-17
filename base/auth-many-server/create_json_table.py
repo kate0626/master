@@ -9,6 +9,9 @@ Usage:
       --ng-ratio 0.3 
     #   --emit-auth-table
 
+作成した auth_by_start.json / node_to_starts.json をサーバごとに事前分割したい場合は
+split_auth_tables.py を使用する（node_to_starts だけの分割も可）。
+
 出力:
   - base/auth-many-server/node_to_starts.json （常に出力）
   - base/auth-many-server/auth_by_start.json （--emit-auth-table 指定時のみ）
@@ -215,6 +218,7 @@ def main() -> None:
         raise SystemExit(f"Edge list not found: {edge_path}")
 
     edges = read_edge_list(edge_path)
+    graph_name = edge_path.stem
 
     # start -> {"n": [...], "e": [...]} を構築
     auth = build_auth_table2(edges, ng_ratio=args.ng_ratio)
@@ -222,7 +226,7 @@ def main() -> None:
     node_to_starts = build_node_to_starts(auth)
 
     # 出力ディレクトリ（プロジェクトルートからの相対パス）
-    out_dir = Path("./base/auth-many-server/")
+    out_dir = Path("./base/auth-many-server/") / graph_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # auth_by_start.json の出力（必要な場合のみ）

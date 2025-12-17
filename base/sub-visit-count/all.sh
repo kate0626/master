@@ -32,7 +32,7 @@ SUBGRAPH_SOURCE_DIR="base/auth-subgraph-server"
 ## ここで使用するサブグラフを定義
 SUBGRAPH_GRAPH_NAME="fb-caltech-connected"
 # ここを配列にしてサイズをスイープ
-SUBGRAPH_GROUP_SIZE_LIST=(100)
+SUBGRAPH_GROUP_SIZE_LIST=(200)
 REPO_DIR="./"
 RUNS_DIR="runs"
 LOG_DIR="${RUNS_DIR}/visit_count"
@@ -56,7 +56,7 @@ START_NODE=ALL                  # RWの開始ノード（ALL で全始点PPR）
 DEFAULT_WARMUP_RATIO=${WARMUP_RATIO:-0.1}           # RW の何割をウォームアップにするか
 DEFAULT_HOT_MIN_VISITS=${HOT_MIN_VISITS:-10000}     # ホット扱いするまでの訪問回数
 # 編集して使えるお手軽プリセット（複数値スイープの初期値）
-DEFAULT_WARMUP_RATIO_SWEEP=(0 0.1 0.2 0.3 0.4 0.5)
+DEFAULT_WARMUP_RATIO_SWEEP=(0.2 0.3 0.4 )
 DEFAULT_HOT_MIN_VISITS_SWEEP=(2)
 
 

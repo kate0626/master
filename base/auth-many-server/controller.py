@@ -12,8 +12,11 @@ from urllib import request as urllib_request
 """
     python3 base/auth-many-server/controller.py --servers 2 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --start-node 1 --walks 100 --alpha 0.1 --seed 42
     
-    2台
+    １台
     python3 base/auth-many-server/controller.py --servers 1 --server-endpoints 10.58.60.5:3000 --start-node 1 --walks 100 --alpha 0.1 --seed 42
+    2台
+    python3 base/auth-many-server/controller.py --servers 2 --server-endpoints 10.58.60.5:3000 10.58.60.11:3000 --start-node 1 --walks 100 --alpha 0.1 --seed 42
+    
 """
 
 

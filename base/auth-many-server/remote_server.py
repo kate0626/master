@@ -19,14 +19,45 @@ from datetime import datetime, timezone
 NodeId = Union[int, str]
 NodeOrEdgeId = Union[int, str]
 
+
+def parse_entity_id(raw: Any) -> NodeOrEdgeId:
+    """
+    Convert a raw node/edge identifier to the normalized form used in shards.
+    Integers stay ints; edge ids keep their string form (edge_u_v); everything
+    else falls back to string.
+    """
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.startswith("edge_"):
+        return raw
+    try:
+        return int(raw)
+    except Exception:
+        return str(raw)
+
+
 """
     python3 base/auth-many-server/remote_server.py --edges ./dataset/Louvain/graph/karate.gr --server-count 2 --server-id 1 --host 10.58.60.6 --port 3000 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --auth-file base/auth-many-server/auth_by_start.json
     python3 base/auth-many-server/remote_server.py --edges ./dataset/Louvain/graph/karate.gr --server-count 2 --server-id 1 --host 10.58.60.6 --port 3000 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --auth-file base/auth-many-server/auth_by_start.json
-    NEW
-    python3 base/auth-many-server/remote_server.py   --server-id 0 --server-count 1   --edges dataset/Louvain/graph/karate.gr   --host 10.58.60.5 --port 3000   --server-endpoints 10.58.60.5:3000   --auth-file base/auth-many-server/auth_by_start.json --node-to-starts-file base/auth-many-server/node_to_starts.json
+
+
+1台で行う時
+    python3 base/auth-many-server/remote_server.py   --server-id 0 --server-count 1  --edges dataset/Louvain/graph/karate.gr   --host 10.58.60.5 --port 3000   --server-endpoints 10.58.60.5:3000   --auth-file base/auth-many-server/auth_by_start.json --node-to-starts-file base/auth-many-server/karate/node_to_starts.json
+
+2台で行うとき
+    python3 base/auth-many-server/remote_server.py   --server-id 0 --server-count 2   --edges dataset/Louvain/graph/karate.gr   --host 10.58.60.5 --port 3000   --server-endpoints 10.58.60.5:3000   --auth-file base/auth-many-server/auth_by_start.json --node-to-starts-file base/auth-many-server/karate/node_to_starts.json
+--partitioner-type metis --metis-partition-file path/to/graph.part.1
+    python3 base/auth-many-server/remote_server.py   --server-id 1 --server-count 2   --edges dataset/Louvain/graph/karate.gr   --host 10.58.60.11 --port 3000   --server-endpoints 10.58.60.11:3000   --auth-file base/auth-many-server/auth_by_start.json --node-to-starts-file base/auth-many-server/karate/node_to_starts.json
+--partitioner-type metis --metis-partition-file path/to/graph.part.2
+
 
     形式的にauthを渡しているだけで実際にはnode_to_startしか持てていない
+    認可データは server_id でフィルタされ、リモートのエンティティは /authorize 経由で所有サーバに確認する
 
+    パーティショナ:
+      - デフォルト: modulo
+      - Louvain:   --partitioner-type community --community-file dataset/Louvain/community/xxx.cm
+      - METIS:     --partitioner-type metis --metis-partition-file path/to/graph.part.N (--metis-base 0|1)
 """
 
 
@@ -110,6 +141,106 @@ class ModuloPartitioner:
         raise TypeError(f"Unsupported entity id type: {entity_id!r}")
 
 
+class CommunityPartitioner:
+    """
+    Louvain などのクラスタリング結果（node -> community_id）を使ってサーバを割り当てる。
+    サーバIDは community_id % server_count で決定し、端点が同じサーバならエッジも同じサーバに置く。
+    端点が異なる場合のみハッシュで分散する。
+    """
+
+    def __init__(self, server_count: int, community_map: Dict[int, int]) -> None:
+        if server_count <= 0:
+            raise ValueError("server_count must be positive")
+        self.server_count = server_count
+        self.community_map = community_map
+        self._modulo = ModuloPartitioner(server_count)
+
+    def assign_node(self, node_id: int) -> int:
+        com = self.community_map.get(node_id)
+        if com is None:
+            # 未知ノードはフォールバックでモジュロ割当
+            return self._modulo.assign_node(node_id)
+        return com % self.server_count
+
+    def assign_edge(self, u: int, v: int) -> int:
+        owner_u = self.assign_node(u)
+        owner_v = self.assign_node(v)
+        if owner_u == owner_v:
+            return owner_u
+        return self._modulo.assign_edge(u, v)
+
+    def assign_entity(self, entity_id: NodeId) -> int:
+        if isinstance(entity_id, int):
+            return self.assign_node(entity_id)
+        if isinstance(entity_id, str) and entity_id.startswith("edge_"):
+            try:
+                _, raw_u, raw_v = entity_id.split("_", 2)
+                return self.assign_edge(int(raw_u), int(raw_v))
+            except ValueError as exc:
+                raise ValueError(f"Malformed edge id: {entity_id!r}") from exc
+        raise TypeError(f"Unsupported entity id type: {entity_id!r}")
+
+
+class MetisPartitioner:
+    """
+    METISの分割結果（part ID）をサーバIDとして使う。part IDが server_count 以上の場合は modulo で丸める。
+    端点が同じサーバならエッジもそのサーバ、異なる場合はハッシュで分散。
+    """
+
+    def __init__(
+        self,
+        server_count: int,
+        part_map: Dict[int, int],
+        edge_metis_map: Optional[Dict[str, int]] = None,
+    ) -> None:
+        if server_count <= 0:
+            raise ValueError("server_count must be positive")
+        self.server_count = server_count
+        self.part_map = part_map
+        self.edge_metis_map = edge_metis_map or {}
+        self._modulo = ModuloPartitioner(server_count)
+
+    def assign_node(self, node_id: int) -> int:
+        part = self.part_map.get(node_id)
+        return part % self.server_count
+
+    def assign_edge(self, u: int, v: int) -> int:
+        owner_u = self.assign_node(u)
+        owner_v = self.assign_node(v)
+        return self._modulo.assign_edge(u, v)
+
+    def assign_entity(self, entity_id: NodeId) -> int:
+        if isinstance(entity_id, int):
+            return self.assign_node(entity_id)
+        if isinstance(entity_id, str) and entity_id.startswith("edge_"):
+            metis_id = self.edge_metis_map.get(entity_id)
+            if metis_id is not None:
+                part = self.part_map.get(metis_id)
+                if part is not None:
+                    return part % self.server_count
+            try:
+                _, raw_u, raw_v = entity_id.split("_", 2)
+                return self.assign_edge(int(raw_u), int(raw_v))
+            except ValueError as exc:
+                raise ValueError(f"Malformed edge id: {entity_id!r}") from exc
+        raise TypeError(f"Unsupported entity id type: {entity_id!r}")
+
+
+class StaticPartitioner:
+    def __init__(
+        self,
+        server_count: int,
+        owner_map: dict,
+        edge_metis_map: dict | None = None,  # ★追加（使わない）
+    ):
+        self.server_count = server_count
+        self.owner_map = owner_map
+        self.edge_metis_map = edge_metis_map or {}  # ★持つだけ（未使用でもOK）
+
+    def assign_entity(self, entity_id):
+        return int(self.owner_map[str(entity_id)])
+
+
 class GraphShard:
     """
     Each shard owns two types of entities:
@@ -126,13 +257,17 @@ class GraphShard:
     """
 
     def __init__(
-        self, edges: Sequence[Tuple[int, int]], server_id: int, server_count: int
+        self,
+        edges: Sequence[Tuple[int, int]],
+        server_id: int,
+        server_count: int,
+        partitioner: Optional[Any] = None,
     ) -> None:
         if server_id < 0 or server_id >= server_count:
             raise ValueError("server_id must satisfy 0 <= server_id < server_count")
 
         self.server_id = server_id
-        self.partitioner = ModuloPartitioner(server_count)
+        self.partitioner = partitioner or ModuloPartitioner(server_count)
         self.local_entities: Set[NodeId] = set()
         self.neighbor_map: Dict[NodeId, List[Neighbor]] = defaultdict(list)
 
@@ -140,7 +275,8 @@ class GraphShard:
             edge_id = make_edge_id(u, v)
             u_owner = self.partitioner.assign_node(u)
             v_owner = self.partitioner.assign_node(v)
-            edge_owner = self.partitioner.assign_edge(u, v)
+            # 端点が異なる場合でもエッジは「端点のどちらか」に必ず置く（ここでは小さいserver_id側に寄せる）
+            edge_owner = u_owner if u_owner <= v_owner else v_owner
 
             if u_owner == self.server_id:
                 self._ensure_entity(u)
@@ -230,6 +366,132 @@ def load_node_to_starts_table(
     return out
 
 
+def load_metis_partition(
+    path: Optional[Union[str, Path]], base_index: int = 0
+) -> Dict[int, int]:
+    """
+    METISの part ファイルを読み込む。
+    - 1列形式: 各行がパートIDのみ → 行番号+base_index がノードID
+    - 2列形式: node_id part_id を空白区切りで指定
+    """
+    if path is None:
+        return {}
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"METIS partition file not found: {p}")
+    mapping: Dict[int, int] = {}
+    with p.open("r", encoding="utf-8") as f:
+        for idx, line in enumerate(f):
+            s = line.strip()
+            if not s:
+                continue
+            parts = s.split()
+            if len(parts) == 1:
+                try:
+                    part = int(parts[0])
+                except Exception:
+                    continue
+                node_id = idx + base_index
+            else:
+                try:
+                    node_id = int(parts[0])
+                    part = int(parts[1])
+                except Exception:
+                    continue
+            mapping[node_id] = part
+    return mapping
+
+
+def build_edge_metis_map(
+    edges: Sequence[Tuple[int, int]], node_shift: int = 0
+) -> Dict[str, int]:
+    """
+    METIS用の二部グラフを作る際に、エッジ頂点を (max_node + idx + 1 + node_shift) で番号付けしたと仮定し、
+    edge_id -> metis_id の対応を返す。
+    """
+    max_node = 0
+    for u, v in edges:
+        max_node = max(max_node, u + node_shift, v + node_shift)
+    edge_map: Dict[str, int] = {}
+    for idx, (u, v) in enumerate(edges):
+        edge_id = make_edge_id(u, v)
+        edge_map[edge_id] = max_node + idx + 1
+    print(f"Built edge_metis_map with {len(edge_map)} entries, max_node={max_node}")
+    return edge_map
+
+
+def load_community_map(path: Optional[Union[str, Path]]) -> Dict[int, int]:
+    """
+    community ファイル (.cm) 形式を想定: 各行 "node community" の2要素。
+    """
+    if path is None:
+        return {}
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Community file not found: {p}")
+    mapping: Dict[int, int] = {}
+    with p.open("r", encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if not s:
+                continue
+            parts = s.split()
+            if len(parts) < 2:
+                continue
+            try:
+                node = int(parts[0])
+                com = int(parts[1])
+            except Exception:
+                continue
+            mapping[node] = com
+    return mapping
+
+
+def filter_node_to_starts_for_shard(
+    node_to_starts: Dict[NodeOrEdgeId, Set[int]],
+    partitioner: Any,
+    server_id: int,
+) -> Dict[NodeOrEdgeId, Set[int]]:
+    """
+    Keep only the authorization entries for entities owned by this shard.
+    This lets each server avoid holding permissions for entities it does not host.
+    """
+    filtered: Dict[NodeOrEdgeId, Set[int]] = {}
+    for entity, starts in node_to_starts.items():
+        try:
+            owner = partitioner.assign_entity(entity)
+        except Exception:
+            continue
+        if owner == server_id:
+            filtered[entity] = set(starts)
+    return filtered
+
+
+def filter_auth_table_for_shard(
+    auth_table: Dict[int, Dict[str, Set[Any]]],
+    partitioner: Any,
+    server_id: int,
+) -> Dict[int, Dict[str, Set[Any]]]:
+    """
+    Trim auth_table so each shard only keeps entries for entities it owns.
+    """
+    filtered: Dict[int, Dict[str, Set[Any]]] = {}
+    for start, entries in auth_table.items():
+        local_nodes = {
+            n
+            for n in entries.get("n", set())
+            if partitioner.assign_entity(n) == server_id
+        }
+        local_edges = {
+            e
+            for e in entries.get("e", set())
+            if partitioner.assign_entity(e) == server_id
+        }
+        if local_nodes or local_edges:
+            filtered[start] = {"n": local_nodes, "e": local_edges}
+    return filtered
+
+
 # ---------------------------------------------------------------------------
 # RNG (de)serialization helpers
 # ---------------------------------------------------------------------------
@@ -294,74 +556,78 @@ class PeerWalker:
         if hasattr(server, "auth_calls"):
             server.auth_calls += 1
 
-    def _is_allowed_entity(self, start_node: Optional[int], entity: Any) -> bool:
-        # print(start_node)
+    def _is_locally_allowed(self, start_node: Optional[int], entity: Any) -> bool:
         if start_node is None:
             return False
-        if isinstance(entity, int):
-            allowed_starts = self.node_to_starts.get(entity)
-            # print("allowed_starts", allowed_starts)
-            return bool(allowed_starts and start_node in allowed_starts)
-        if isinstance(entity, str):
-            allowed_starts = self.node_to_starts.get(entity)
-            # print("allowed_starts", allowed_starts)
-            return bool(allowed_starts and start_node in allowed_starts)
-        return False
+        allowed_starts = self.node_to_starts.get(entity)
+        return bool(allowed_starts and start_node in allowed_starts)
+
+    # 遷移予定のサーバが異なるサーバだった時の流れ
+    def _check_remote_authorization(
+        self, target_server: int, start_node: Optional[int], entity: Any
+    ) -> bool:
+        # ここでそのサーバに行かないと認可テーブルがないので確認できないのではないか
+        # きちんとターゲットサーバがあることを確認
+        print(
+            f"[Server {self.shard.server_id}] Checking remote auth on server {target_server} for entity {entity} from start_node {start_node}"
+        )
+        if target_server < 0 or target_server >= len(self.endpoints):
+            print(
+                f"[Server {self.shard.server_id}] auth check skipped: endpoint for server {target_server} is missing"
+            )
+            return False
+        url = f"{self.endpoints[target_server].rstrip('/')}/authorize"
+        payload = {"entity": entity, "start_node": start_node}
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib_request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        try:
+            with urllib_request.urlopen(req, timeout=self.request_timeout) as resp:
+                body = json.loads(resp.read())
+            return bool(body.get("allowed"))
+        except Exception as exc:
+            print(
+                f"[Server {self.shard.server_id}] auth check failed on server {target_server} for {entity}: {exc}"
+            )
+            return False
+
+    # def _authorize_candidate(
+    #     self, start_node: Optional[int], candidate: Dict[str, Any]
+    # ) -> bool:
+    #     owner_sid = int(candidate["server_id"])
+    #     target = candidate["node_id"]
+    def _authorize_candidate(
+        self, start_node: Optional[int], candidate: Dict[str, Any]
+    ) -> bool:
+        target = candidate["node_id"]
+
+        # ★ candidate["server_id"] は信用しない。ファイル由来の owner_map を使う
+        owner_sid = int(self.owner_map[str(target)])
+
+        t0 = time.perf_counter()
+        print("認可")
+        if owner_sid == self.shard.server_id:
+            # 移動さきが同じサーバだったらローカルで認可判定
+            allowed = self._is_locally_allowed(start_node, target)
+            print(
+                f"  → ローカル認可結果: {'allowed' if allowed else 'denied'} for entity {target} from start_node {start_node}"
+            )
+        else:
+            # 異なるサーバだったらリモート認可確認
+            print(
+                f" サーバが異なるのでリモート認可確認 on server {owner_sid} for entity {target} from start_node {start_node},今のサーバとノードは {self.shard.server_id}, {target}移動前のノードは {start_node}"
+            )
+            allowed = self._check_remote_authorization(owner_sid, start_node, target)
+        t1 = time.perf_counter()
+        self._record_auth_cost(t1 - t0)
+        return allowed
 
     def _get_local_neighbors(self, entity_id: Any) -> List[Dict[str, Any]]:
         neighbors = self.shard.get_neighbors(entity_id)
         if not neighbors:
             return []
         return [asdict(n) for n in neighbors]
-
-    # NOTE: ここが認可アルゴリズムの重要な部分
-    # def _select_next_neighbor(
-    #     self,
-    #     rng: random.Random,
-    #     neighbors: List[Dict[str, Any]],
-    #     start_node: Optional[int],
-    #     current_entity: NodeId,
-    # ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    #     if not neighbors:
-    #         return None, None
-    #     max_retries = len(neighbors) + 3
-    #     next_choice: Optional[Dict[str, Any]] = None
-    #     ## 認可の代替
-    #     # for _ in range(max_retries):
-    #     #     # 認可はスキップ
-    #     #     candidate = rng.choice(neighbors)
-    #     #     next_choice = candidate
-    #     #     break
-    #     # ここまで
-    #     # ここから認可特有のフェーズ
-    #     # 隣接が全部NGになるまで繰り返す
-    #     for _ in range(max_retries):
-    #         self._record_authorization_attempt(current_entity)
-    #         candidate = rng.choice(neighbors)
-    #         # print("cansdate", candidate)
-    #         cid = candidate["node_id"]
-    #         # print(cid)
-    #         t0 = time.perf_counter()
-    #         allowed = self._is_allowed_entity(start_node, cid)
-    #         t1 = time.perf_counter()
-    #         self._record_auth_cost(t1 - t0)
-    #         if allowed:
-    #             next_choice = candidate
-    #             self._record_authorization_success(current_entity, cid)
-    #             break
-    #         self._record_authorization_denial(current_entity)
-
-    #     if next_choice is None:
-    #         print(
-    #             f"[Server {self.shard.server_id}] All {max_retries} neighbors denied → stop"
-    #         )
-    #         denial = {
-    #             "denied": True,
-    #             "denied_reason": f"no authorized neighbors from {current_entity}",
-    #         }
-    #         return None, denial
-    #     # ここまで
-    #     return next_choice, None
 
     def _select_next_neighbor(
         self,
@@ -400,15 +666,9 @@ class PeerWalker:
             candidate = neighbors[idx]
             cid = candidate["node_id"]
 
-            t0 = time.perf_counter()
-            # グループ判定込みの認可を使うならこちら
-            allowed = self._is_allowed_entity(start_node, cid)
-            # もし _is_allowed_entity を使いたいなら↑を差し替えればOK
-            t1 = time.perf_counter()
-            self._record_auth_cost(t1 - t0)
-
-            if allowed:
+            if self._authorize_candidate(start_node, candidate):
                 next_choice = candidate
+                # 選んだノードに関して認可を行う
                 self._record_authorization_success(current_entity, cid)
                 break
             else:
@@ -473,6 +733,21 @@ class PeerWalker:
                 return self._post_continue(owner, state_out)
 
             neighbors = self._get_local_neighbors(current_entity)
+            # TODO:
+            print(
+                f"[DBG] neighbors of {current_entity} on sid={current_sid}: "
+                + ", ".join(
+                    [f"{n['node_id']}@{n['server_id']}" for n in neighbors[:30]]
+                )
+                + (" ..." if len(neighbors) > 30 else "")
+            )
+            for n in neighbors[:200]:
+                pred = self.shard.partitioner.assign_entity(n["node_id"])
+                if int(n["server_id"]) != pred:
+                    print(
+                        f"[DBG][MISMATCH] neighbor {n['node_id']} says sid={n['server_id']} but partitioner says {pred}"
+                    )
+            ## TODO:
             # あるノードが認可を通るか→通るまで繰り返す
             next_choice, denial_payload = self._select_next_neighbor(
                 rng, neighbors, start_node, current_entity
@@ -634,6 +909,9 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         if parsed.path == "/continue_walk":
             self._handle_continue_walk()
             return
+        if parsed.path == "/authorize":
+            self._handle_authorize()
+            return
         self.send_error(404, "Unknown path")
 
     def _handle_walk_start(self) -> None:
@@ -741,6 +1019,35 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
 
         self._write_json(res)
 
+    def _handle_authorize(self) -> None:
+        payload = self._read_json_body()
+        # リクエストボディの読解
+        print(f"[Server {self.server.server_id}] /authorize request: {payload}")
+        if payload is None:
+            return
+
+        raw_entity = payload.get("entity")
+        start_node = payload.get("start_node")
+        entity = parse_entity_id(raw_entity)
+        print("確認ノード、スタートノード", entity, start_node, type(start_node))
+        print(self.server.node_to_starts)
+        try:
+            start_int = int(start_node)
+        except Exception:
+            self.send_error(400, "'start_node' must be an integer")
+            return
+
+        allowed_starts = self.server.node_to_starts.get(entity, set())
+        allowed = bool(start_int in allowed_starts)
+        print("確認ノード、スタートノード、うむ", allowed_starts, start_node, allowed)
+        self._write_json(
+            {
+                "allowed": allowed,
+                "entity": entity,
+                "server_id": self.server.server_id,
+            }
+        )
+
     def log_message(self, format: str, *args) -> None:
         return
 
@@ -846,6 +1153,47 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Optional JSON path mapping target_node -> allowed start nodes.",
     )
+    parser.add_argument(
+        "--partitioner-type",
+        type=str,
+        default="modulo",
+        choices=["modulo", "community", "metis"],
+        help="How to assign nodes/edges to servers.",
+    )
+    parser.add_argument(
+        "--community-file",
+        type=str,
+        default=None,
+        help="Community assignment file (node community) used when partitioner-type=community.",
+    )
+    parser.add_argument(
+        "--metis-partition-file",
+        type=str,
+        default=None,
+        help="METIS partition file used when partitioner-type=metis.",
+    )
+    parser.add_argument(
+        "--metis-base",
+        type=int,
+        default=0,
+        help="Base index for 1-column METIS partition files (default 0).",
+    )
+    parser.add_argument(
+        "--metis-use-bipartite-edges",
+        action="store_true",
+        help="Assume METIS partition includes edge vertices (node-edge bipartite). Edge ids are numbered max_node+idx+1.",
+    )
+    parser.add_argument(
+        "--metis-node-shift",
+        type=int,
+        default=0,
+        help="Shift applied to node ids when constructing edge vertex ids for METIS bipartite (use 1 if METIS input was 1-based).",
+    )
+    parser.add_argument(
+        "--dump-auth",
+        action="store_true",
+        help="Dump filtered auth/node_to_starts to auth_dump_server{sid}.json for debugging.",
+    )
     return parser.parse_args()
 
 
@@ -856,7 +1204,39 @@ def main() -> None:
         raise FileNotFoundError(f"Edge list not found: {edge_path}")
 
     edges = load_edge_list(edge_path)
-    shard = GraphShard(edges, server_id=args.server_id, server_count=args.server_count)
+
+    # パーティショナ選択（デフォルト: モジュロ、オプション: Louvainコミュニティ、METIS）
+    partitioner: Any
+    edge_metis_map = None
+    if args.partitioner_type == "community":
+        if not args.community_file:
+            raise FileNotFoundError(
+                "--community-file is required for community partitioner"
+            )
+        community_map = load_community_map(Path(args.community_file))
+        partitioner = CommunityPartitioner(args.server_count, community_map)
+    elif args.partitioner_type == "metis":
+        if not args.metis_partition_file:
+            raise FileNotFoundError(
+                "--metis-partition-file is required for metis partitioner"
+            )
+        part_map = load_metis_partition(
+            Path(args.metis_partition_file), base_index=args.metis_base
+        )
+        if args.metis_use_bipartite_edges:
+            edge_metis_map = build_edge_metis_map(
+                edges, node_shift=args.metis_node_shift
+            )
+        partitioner = StaticPartitioner(
+            part_map, args.server_count, edge_metis_map=edge_metis_map
+        )
+
+    shard = GraphShard(
+        edges,
+        server_id=args.server_id,
+        server_count=args.server_count,
+        partitioner=partitioner,
+    )
     server = GraphShardServer(
         host=args.host,
         port=args.port,
@@ -869,11 +1249,37 @@ def main() -> None:
     auth_table = {}
     if args.auth_file:
         auth_table = load_entity_auth_table(Path(args.auth_file))
-        server.auth_table = auth_table
-    if args.node_to_starts_file:
-        server.node_to_starts = load_node_to_starts_table(
-            Path(args.node_to_starts_file)
+        server.auth_table = filter_auth_table_for_shard(
+            auth_table, shard.partitioner, shard.server_id
         )
+        print(
+            f"[Server {server.server_id}] auth_table: loaded {len(auth_table)} starts, keeping {len(server.auth_table)} local entries"
+        )
+    if args.node_to_starts_file:
+        loaded = load_node_to_starts_table(Path(args.node_to_starts_file))
+        server.node_to_starts = filter_node_to_starts_for_shard(
+            loaded, shard.partitioner, shard.server_id
+        )
+        print(
+            f"[Server {server.server_id}] node_to_starts: loaded {len(loaded)} entities, keeping {len(server.node_to_starts)} local entities"
+        )
+
+    if args.dump_auth:
+        dump = {
+            "server_id": server.server_id,
+            "auth_table": {
+                str(k): {"n": sorted(v.get("n", [])), "e": sorted(v.get("e", []))}
+                for k, v in server.auth_table.items()
+            },
+            "node_to_starts": {
+                str(k): sorted(list(v)) for k, v in server.node_to_starts.items()
+            },
+        }
+        dump_path = Path(f"auth_dump_server{server.server_id}.json")
+        dump_path.write_text(
+            json.dumps(dump, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(f"[Server {server.server_id}] dumped auth/node_to_starts to {dump_path}")
 
     # print(
     #     f"[Server {server.server_id}] Serving {len(shard.local_entities)} entities (nodes + edges) on {args.host}:{args.port} / {args.server_count} servers"

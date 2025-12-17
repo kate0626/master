@@ -71,7 +71,7 @@ EXPERIMENT_GROUPS: List[Tuple[str, List[str]]] = [
     #     ],
     # ),
     (
-        "size=100",
+        "size=20",
         [
             "runs/visit_count/test/fb-caltech-connected_size100_walks10_alpha0_1_wr0_hot2.log",
             "runs/visit_count/test/fb-caltech-connected_size100_walks10_alpha0_1_wr0_1_hot2.log",
@@ -84,70 +84,61 @@ EXPERIMENT_GROUPS: List[Tuple[str, List[str]]] = [
             # "runs/visit_count/test/fb-caltech-connected_size20_walks10_alpha0_1_wr0_8_hot300.log",
         ],
     ),
-    # (
-    #     "size=50",
-    #     [
-    #         "runs/visit_count/test/fb-caltech-connected_size50_walks10_alpha0_1_wr0_hot30.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size50_walks10_alpha0_1_wr0_1_hot30.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size50_walks10_alpha0_1_wr0_2_hot30.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size50_walks10_alpha0_1_wr0_3_hot30.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size50_walks10_alpha0_1_wr0_4_hot30.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size50_walks10_alpha0_1_wr0_5_hot30.log",
-    #     ],
-    # ),
-    # (
-    #     "size=100",
-    #     [
-    #         "runs/visit_count/test/fb-caltech-connected_size100_walks10_alpha0_1_wr0_hot30.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size100_walks10_alpha0_1_wr0_1_hot30.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size100_walks10_alpha0_1_wr0_2_hot30.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size100_walks10_alpha0_1_wr0_3_hot30.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size100_walks10_alpha0_1_wr0_4_hot30.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size100_walks10_alpha0_1_wr0_5_hot30.log",
-    #     ],
-    # ),
-    # (
-    #     "size=150",
-    #     [
-    #         "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_1_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_2_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_3_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_4_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_5_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_6_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_7_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_8_hot3.log",
-    #     ],
-    # ),
-    # (
-    #     "size=200",
-    #     [
-    #         "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_hot300.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_1_hot300.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_2_hot300.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_3_hot300.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_4_hot300.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_5_hot300.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_6_hot300.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_7_hot300.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_8_hot300.log",
-    #     ],
-    # ),
-    # (
-    #     "size=250",
-    #     [
-    #         "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_1_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_2_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_3_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_4_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_5_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_6_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_7_hot3.log",
-    #         "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_8_hot3.log",
-    #     ],
-    # ),
+    (
+        "size=50",
+        [
+            "runs/visit_count/test/fb-caltech-connected_size50_walks10_alpha0_1_wr0_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size50_walks10_alpha0_1_wr0_1_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size50_walks10_alpha0_1_wr0_2_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size50_walks10_alpha0_1_wr0_3_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size50_walks10_alpha0_1_wr0_4_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size50_walks10_alpha0_1_wr0_5_hot2.log",
+        ],
+    ),
+    (
+        "size=100",
+        [
+            "runs/visit_count/test/fb-caltech-connected_size100_walks10_alpha0_1_wr0_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size100_walks10_alpha0_1_wr0_1_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size100_walks10_alpha0_1_wr0_2_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size100_walks10_alpha0_1_wr0_3_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size100_walks10_alpha0_1_wr0_4_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size100_walks10_alpha0_1_wr0_5_hot2.log",
+        ],
+    ),
+    (
+        "size=150",
+        [
+            "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_1_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_2_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_3_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_4_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size150_walks10_alpha0_1_wr0_5_hot2.log",
+        ],
+    ),
+    (
+        "size=200",
+        [
+            "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_1_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_2_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_3_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_4_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size200_walks10_alpha0_1_wr0_5_hot2.log",
+        ],
+    ),
+    (
+        "size=250",
+        [
+            "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_1_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_2_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_3_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_4_hot2.log",
+            "runs/visit_count/test/fb-caltech-connected_size250_walks10_alpha0_1_wr0_5_hot2.log",
+        ],
+    ),
 ]
 
 # 横軸: "size" / "alpha" / "wr" / "hot"
