@@ -46,18 +46,14 @@ def parse_entity_id(raw: Any) -> NodeOrEdgeId:
 
 2台で行うとき
     python3 base/auth-many-server/remote_server.py   --server-id 0 --server-count 2   --edges dataset/Louvain/graph/karate.gr   --host 10.58.60.5 --port 3000   --server-endpoints 10.58.60.5:3000   --auth-file base/auth-many-server/auth_by_start.json --node-to-starts-file base/auth-many-server/karate/node_to_starts.json
---partitioner-type metis --metis-partition-file path/to/graph.part.1
     python3 base/auth-many-server/remote_server.py   --server-id 1 --server-count 2   --edges dataset/Louvain/graph/karate.gr   --host 10.58.60.11 --port 3000   --server-endpoints 10.58.60.11:3000   --auth-file base/auth-many-server/auth_by_start.json --node-to-starts-file base/auth-many-server/karate/node_to_starts.json
---partitioner-type metis --metis-partition-file path/to/graph.part.2
 
 
     形式的にauthを渡しているだけで実際にはnode_to_startしか持てていない
     認可データは server_id でフィルタされ、リモートのエンティティは /authorize 経由で所有サーバに確認する
 
     パーティショナ:
-      - デフォルト: modulo
-      - Louvain:   --partitioner-type community --community-file dataset/Louvain/community/xxx.cm
-      - METIS:     --partitioner-type metis --metis-partition-file path/to/graph.part.N (--metis-base 0|1)
+      - デフォルト: modulo のみ（他のパーティショナは未実装につき無効）
 """
 
 
@@ -115,6 +111,15 @@ class ModuloPartitioner:
     assign_node(node_id)：ノードを node_id % server_count で割り当てる（シンプル均等割り当て）。
     assign_edge(u, v)：エッジは (a * 1_000_003 + b) % server_count のハッシュで割り当てる。1_000_003 は大きな素数で衝突分散に寄与する。
     assign_entity(entity_id)：与えられた entity_id が整数ならノード割り当て、文字列で edge_* ならエッジ割当を行う。形式不正や未対応型なら例外を投げる。
+
+    auth-server/のremote_serverに関して考える
+
+        使用するグラフはtest/以下の部分である
+        どのノードにアクセスできるのか（ノード：アクセスできる始点）を示したnode_to_start.jsonがあり、これはstartの後についている数字のサーバに別々に配置されるようにしたい
+
+        例えば、node_to_start0.jsonに書いてあるものはサーバ０に配置されるようにしたい
+
+        これを参照して現在のpeerwalkを行いたいので修正して
     """
 
     def __init__(self, server_count: int) -> None:
@@ -141,104 +146,40 @@ class ModuloPartitioner:
         raise TypeError(f"Unsupported entity id type: {entity_id!r}")
 
 
-class CommunityPartitioner:
+class StaticPartitioner:
     """
-    Louvain などのクラスタリング結果（node -> community_id）を使ってサーバを割り当てる。
-    サーバIDは community_id % server_count で決定し、端点が同じサーバならエッジも同じサーバに置く。
-    端点が異なる場合のみハッシュで分散する。
-    """
-
-    def __init__(self, server_count: int, community_map: Dict[int, int]) -> None:
-        if server_count <= 0:
-            raise ValueError("server_count must be positive")
-        self.server_count = server_count
-        self.community_map = community_map
-        self._modulo = ModuloPartitioner(server_count)
-
-    def assign_node(self, node_id: int) -> int:
-        com = self.community_map.get(node_id)
-        if com is None:
-            # 未知ノードはフォールバックでモジュロ割当
-            return self._modulo.assign_node(node_id)
-        return com % self.server_count
-
-    def assign_edge(self, u: int, v: int) -> int:
-        owner_u = self.assign_node(u)
-        owner_v = self.assign_node(v)
-        if owner_u == owner_v:
-            return owner_u
-        return self._modulo.assign_edge(u, v)
-
-    def assign_entity(self, entity_id: NodeId) -> int:
-        if isinstance(entity_id, int):
-            return self.assign_node(entity_id)
-        if isinstance(entity_id, str) and entity_id.startswith("edge_"):
-            try:
-                _, raw_u, raw_v = entity_id.split("_", 2)
-                return self.assign_edge(int(raw_u), int(raw_v))
-            except ValueError as exc:
-                raise ValueError(f"Malformed edge id: {entity_id!r}") from exc
-        raise TypeError(f"Unsupported entity id type: {entity_id!r}")
-
-
-class MetisPartitioner:
-    """
-    METISの分割結果（part ID）をサーバIDとして使う。part IDが server_count 以上の場合は modulo で丸める。
-    端点が同じサーバならエッジもそのサーバ、異なる場合はハッシュで分散。
+    Explicit entity -> server mapping. Falls back to modulo for unknown ids.
     """
 
     def __init__(
         self,
         server_count: int,
-        part_map: Dict[int, int],
-        edge_metis_map: Optional[Dict[str, int]] = None,
+        mapping: Dict[str, int],
+        fallback: Optional[ModuloPartitioner] = None,
     ) -> None:
         if server_count <= 0:
             raise ValueError("server_count must be positive")
         self.server_count = server_count
-        self.part_map = part_map
-        self.edge_metis_map = edge_metis_map or {}
-        self._modulo = ModuloPartitioner(server_count)
+        self.mapping = {str(k): int(v) % server_count for k, v in mapping.items()}
+        self.fallback = fallback or ModuloPartitioner(server_count)
 
     def assign_node(self, node_id: int) -> int:
-        part = self.part_map.get(node_id)
-        return part % self.server_count
+        key = str(node_id)
+        if key in self.mapping:
+            return self.mapping[key]
+        return self.fallback.assign_node(node_id)
 
     def assign_edge(self, u: int, v: int) -> int:
-        owner_u = self.assign_node(u)
-        owner_v = self.assign_node(v)
-        return self._modulo.assign_edge(u, v)
+        edge_id = make_edge_id(u, v)
+        if edge_id in self.mapping:
+            return self.mapping[edge_id]
+        return self.fallback.assign_edge(u, v)
 
     def assign_entity(self, entity_id: NodeId) -> int:
-        if isinstance(entity_id, int):
-            return self.assign_node(entity_id)
-        if isinstance(entity_id, str) and entity_id.startswith("edge_"):
-            metis_id = self.edge_metis_map.get(entity_id)
-            if metis_id is not None:
-                part = self.part_map.get(metis_id)
-                if part is not None:
-                    return part % self.server_count
-            try:
-                _, raw_u, raw_v = entity_id.split("_", 2)
-                return self.assign_edge(int(raw_u), int(raw_v))
-            except ValueError as exc:
-                raise ValueError(f"Malformed edge id: {entity_id!r}") from exc
-        raise TypeError(f"Unsupported entity id type: {entity_id!r}")
-
-
-class StaticPartitioner:
-    def __init__(
-        self,
-        server_count: int,
-        owner_map: dict,
-        edge_metis_map: dict | None = None,  # ★追加（使わない）
-    ):
-        self.server_count = server_count
-        self.owner_map = owner_map
-        self.edge_metis_map = edge_metis_map or {}  # ★持つだけ（未使用でもOK）
-
-    def assign_entity(self, entity_id):
-        return int(self.owner_map[str(entity_id)])
+        key = str(entity_id)
+        if key in self.mapping:
+            return self.mapping[key]
+        return self.fallback.assign_entity(entity_id)
 
 
 class GraphShard:
@@ -262,21 +203,33 @@ class GraphShard:
         server_id: int,
         server_count: int,
         partitioner: Optional[Any] = None,
+        owned_hints: Optional[Set[NodeOrEdgeId]] = None,
     ) -> None:
         if server_id < 0 or server_id >= server_count:
             raise ValueError("server_id must satisfy 0 <= server_id < server_count")
 
         self.server_id = server_id
         self.partitioner = partitioner or ModuloPartitioner(server_count)
+        self.owned_hints: Set[NodeOrEdgeId] = owned_hints or set()
         self.local_entities: Set[NodeId] = set()
         self.neighbor_map: Dict[NodeId, List[Neighbor]] = defaultdict(list)
 
         for u, v in edges:
             edge_id = make_edge_id(u, v)
-            u_owner = self.partitioner.assign_node(u)
-            v_owner = self.partitioner.assign_node(v)
-            # 端点が異なる場合でもエッジは「端点のどちらか」に必ず置く（ここでは小さいserver_id側に寄せる）
-            edge_owner = u_owner if u_owner <= v_owner else v_owner
+            # ヒントにあれば自サーバ所有を優先
+            if u in self.owned_hints:
+                u_owner = self.server_id
+            else:
+                u_owner = self.partitioner.assign_node(u)
+            if v in self.owned_hints:
+                v_owner = self.server_id
+            else:
+                v_owner = self.partitioner.assign_node(v)
+            if edge_id in self.owned_hints:
+                edge_owner = self.server_id
+            else:
+                # 端点が異なる場合でもエッジは「端点のどちらか」に必ず置く（ここでは小さいserver_id側に寄せる）
+                edge_owner = u_owner if u_owner <= v_owner else v_owner
 
             if u_owner == self.server_id:
                 self._ensure_entity(u)
@@ -300,7 +253,14 @@ class GraphShard:
     def get_neighbors(self, entity_id: NodeId) -> Optional[List[Neighbor]]:
         if entity_id not in self.local_entities:
             return None
-        return list(self.neighbor_map.get(entity_id, []))
+        resolved: List[Neighbor] = []
+        for n in self.neighbor_map.get(entity_id, []):
+            try:
+                owner = self.partitioner.assign_entity(n.node_id)
+            except Exception:
+                owner = n.server_id
+            resolved.append(Neighbor(n.node_id, owner))
+        return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -366,85 +326,25 @@ def load_node_to_starts_table(
     return out
 
 
-def load_metis_partition(
-    path: Optional[Union[str, Path]], base_index: int = 0
-) -> Dict[int, int]:
+def resolve_node_to_starts_path(base_path: Path, server_id: int) -> Path:
     """
-    METISの part ファイルを読み込む。
-    - 1列形式: 各行がパートIDのみ → 行番号+base_index がノードID
-    - 2列形式: node_id part_id を空白区切りで指定
+    Prefer server-specific node_to_starts files when present.
+    e.g. node_to_starts_server0.json or node_to_starts0.json next to the base file.
+    Falls back to the provided base_path if no variant exists.
     """
-    if path is None:
-        return {}
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"METIS partition file not found: {p}")
-    mapping: Dict[int, int] = {}
-    with p.open("r", encoding="utf-8") as f:
-        for idx, line in enumerate(f):
-            s = line.strip()
-            if not s:
-                continue
-            parts = s.split()
-            if len(parts) == 1:
-                try:
-                    part = int(parts[0])
-                except Exception:
-                    continue
-                node_id = idx + base_index
-            else:
-                try:
-                    node_id = int(parts[0])
-                    part = int(parts[1])
-                except Exception:
-                    continue
-            mapping[node_id] = part
-    return mapping
-
-
-def build_edge_metis_map(
-    edges: Sequence[Tuple[int, int]], node_shift: int = 0
-) -> Dict[str, int]:
-    """
-    METIS用の二部グラフを作る際に、エッジ頂点を (max_node + idx + 1 + node_shift) で番号付けしたと仮定し、
-    edge_id -> metis_id の対応を返す。
-    """
-    max_node = 0
-    for u, v in edges:
-        max_node = max(max_node, u + node_shift, v + node_shift)
-    edge_map: Dict[str, int] = {}
-    for idx, (u, v) in enumerate(edges):
-        edge_id = make_edge_id(u, v)
-        edge_map[edge_id] = max_node + idx + 1
-    print(f"Built edge_metis_map with {len(edge_map)} entries, max_node={max_node}")
-    return edge_map
-
-
-def load_community_map(path: Optional[Union[str, Path]]) -> Dict[int, int]:
-    """
-    community ファイル (.cm) 形式を想定: 各行 "node community" の2要素。
-    """
-    if path is None:
-        return {}
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"Community file not found: {p}")
-    mapping: Dict[int, int] = {}
-    with p.open("r", encoding="utf-8") as f:
-        for line in f:
-            s = line.strip()
-            if not s:
-                continue
-            parts = s.split()
-            if len(parts) < 2:
-                continue
-            try:
-                node = int(parts[0])
-                com = int(parts[1])
-            except Exception:
-                continue
-            mapping[node] = com
-    return mapping
+    stem = base_path.stem
+    suffix = base_path.suffix
+    candidates = [
+        base_path.with_name(f"{stem}_server{server_id}{suffix}"),
+        base_path.with_name(f"{stem}{server_id}{suffix}"),
+        base_path,
+    ]
+    for cand in candidates:
+        if cand.exists():
+            return cand
+    raise FileNotFoundError(
+        f"node_to_starts file not found. Tried: {[str(c) for c in candidates]}"
+    )
 
 
 def filter_node_to_starts_for_shard(
@@ -533,6 +433,7 @@ class PeerWalker:
         stats_collector: Optional[Any] = None,
         ppr_mode: bool = False,
         node_to_starts: Optional[Dict[NodeOrEdgeId, Set[int]]] = None,
+        owner_map: Optional[Dict[str, int]] = None,
     ):
         self.shard = shard
         self.endpoints = [
@@ -545,6 +446,7 @@ class PeerWalker:
         self.stats_collector = stats_collector
         self.ppr_mode = ppr_mode
         self.node_to_starts: Dict[NodeOrEdgeId, Set[int]] = node_to_starts or {}
+        self.owner_map: Dict[str, int] = owner_map or {}
 
     # --- Authorization helpers ---------------------------------------------
     def _record_auth_cost(self, duration: float) -> None:
@@ -602,8 +504,14 @@ class PeerWalker:
     ) -> bool:
         target = candidate["node_id"]
 
-        # ★ candidate["server_id"] は信用しない。ファイル由来の owner_map を使う
-        owner_sid = int(self.owner_map[str(target)])
+        owner_sid: Optional[int] = None
+        if self.owner_map:
+            owner_sid = self.owner_map.get(str(target))
+        if owner_sid is None:
+            try:
+                owner_sid = int(candidate.get("server_id"))
+            except Exception:
+                owner_sid = self.shard.partitioner.assign_entity(target)
 
         t0 = time.perf_counter()
         print("認可")
@@ -951,6 +859,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             stats_collector=self.server,
             ppr_mode=getattr(self.server, "ppr_mode", False),
             node_to_starts=getattr(self.server, "node_to_starts", None),
+            owner_map=getattr(self.server, "owner_map", None),
         )
         start_ts = time.perf_counter()
         wall_start_epoch = time.time()
@@ -1010,6 +919,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             stats_collector=self.server,
             ppr_mode=getattr(self.server, "ppr_mode", False),
             node_to_starts=getattr(self.server, "node_to_starts", None),
+            owner_map=getattr(self.server, "owner_map", None),
         )
         try:
             res = walker.continue_from_state(state)
@@ -1089,6 +999,7 @@ class GraphShardServer(ThreadingHTTPServer):
         # auth_table will be attached by main() if provided
         self.auth_table: Dict[int, Dict[str, Set[Any]]] = {}
         self.node_to_starts: Dict[NodeOrEdgeId, Set[int]] = {}
+        self.owner_map: Dict[str, int] = {}
 
         # 認可およびアクセスの統計カウンタを初期化
         self.access_counter = Counter()  # 各ノード・エッジへのアクセス回数
@@ -1154,42 +1065,6 @@ def parse_arguments() -> argparse.Namespace:
         help="Optional JSON path mapping target_node -> allowed start nodes.",
     )
     parser.add_argument(
-        "--partitioner-type",
-        type=str,
-        default="modulo",
-        choices=["modulo", "community", "metis"],
-        help="How to assign nodes/edges to servers.",
-    )
-    parser.add_argument(
-        "--community-file",
-        type=str,
-        default=None,
-        help="Community assignment file (node community) used when partitioner-type=community.",
-    )
-    parser.add_argument(
-        "--metis-partition-file",
-        type=str,
-        default=None,
-        help="METIS partition file used when partitioner-type=metis.",
-    )
-    parser.add_argument(
-        "--metis-base",
-        type=int,
-        default=0,
-        help="Base index for 1-column METIS partition files (default 0).",
-    )
-    parser.add_argument(
-        "--metis-use-bipartite-edges",
-        action="store_true",
-        help="Assume METIS partition includes edge vertices (node-edge bipartite). Edge ids are numbered max_node+idx+1.",
-    )
-    parser.add_argument(
-        "--metis-node-shift",
-        type=int,
-        default=0,
-        help="Shift applied to node ids when constructing edge vertex ids for METIS bipartite (use 1 if METIS input was 1-based).",
-    )
-    parser.add_argument(
         "--dump-auth",
         action="store_true",
         help="Dump filtered auth/node_to_starts to auth_dump_server{sid}.json for debugging.",
@@ -1204,38 +1079,74 @@ def main() -> None:
         raise FileNotFoundError(f"Edge list not found: {edge_path}")
 
     edges = load_edge_list(edge_path)
+    print(
+        f"[Server {args.server_id}] loaded edges from {edge_path} (count={len(edges)})"
+    )
 
-    # パーティショナ選択（デフォルト: モジュロ、オプション: Louvainコミュニティ、METIS）
-    partitioner: Any
-    edge_metis_map = None
-    if args.partitioner_type == "community":
-        if not args.community_file:
-            raise FileNotFoundError(
-                "--community-file is required for community partitioner"
-            )
-        community_map = load_community_map(Path(args.community_file))
-        partitioner = CommunityPartitioner(args.server_count, community_map)
-    elif args.partitioner_type == "metis":
-        if not args.metis_partition_file:
-            raise FileNotFoundError(
-                "--metis-partition-file is required for metis partitioner"
-            )
-        part_map = load_metis_partition(
-            Path(args.metis_partition_file), base_index=args.metis_base
+    # パーティショナはデフォルト Modulo。サーバ専用 node_to_starts がある場合は StaticPartitioner で強制上書き。
+    base_partitioner = ModuloPartitioner(args.server_count)
+    partitioner: Any = base_partitioner
+
+    filtered_node_to_starts: Dict[NodeOrEdgeId, Set[int]] = {}
+    owned_hints: Set[NodeOrEdgeId] = set()
+    node_to_starts_path: Optional[Path] = None
+    loaded_nts: Dict[NodeOrEdgeId, Set[int]] = {}
+    static_mapping: Dict[str, int] = {}
+    is_server_specific = False
+    if args.node_to_starts_file:
+        base_nts_path = Path(args.node_to_starts_file)
+        node_to_starts_path = resolve_node_to_starts_path(base_nts_path, args.server_id)
+        print(
+            f"[Server {args.server_id}] loading node_to_starts from {node_to_starts_path}"
         )
-        if args.metis_use_bipartite_edges:
-            edge_metis_map = build_edge_metis_map(
-                edges, node_shift=args.metis_node_shift
-            )
+        loaded_nts = load_node_to_starts_table(node_to_starts_path)
+        print(f"(entries={len(loaded_nts)}), {loaded_nts}")
+        is_server_specific = node_to_starts_path.resolve() != base_nts_path.resolve()
+        # if is_server_specific:
+        print("サーバ専用ファイル")
+        print(f"[Server {args.server_id}] detected server-specific node_to_starts file")
+        # サーバ専用ファイルは全件をこのサーバに紐付ける
+        filtered_node_to_starts = loaded_nts
+        owned_hints = set(filtered_node_to_starts.keys())
+        static_mapping = {str(ent): int(args.server_id) for ent in loaded_nts}
         partitioner = StaticPartitioner(
-            part_map, args.server_count, edge_metis_map=edge_metis_map
+            server_count=args.server_count,
+            mapping=static_mapping,
+            fallback=base_partitioner,
         )
+        ownership_lines = [
+            f"  {ent} -> server {args.server_id}"
+            for ent in sorted(loaded_nts, key=lambda x: str(x))
+        ]
+        print(
+            f"[Server {args.server_id}] node_to_starts ownership map (forced local):\n"
+            + "\n".join(ownership_lines)
+        )
+        # else:
+        #     print("bbbbbbb")
+        #     filtered_node_to_starts = filter_node_to_starts_for_shard(
+        #         loaded_nts, partitioner, args.server_id
+        #     )
+        #     owned_hints = set(filtered_node_to_starts.keys())
+        #     ownership_lines = []
+        #     for ent in sorted(loaded_nts, key=lambda x: str(x)):
+        #         try:
+        #             owner = partitioner.assign_entity(ent)
+        #             ownership_lines.append(f"  {ent} -> server {owner}")
+        #         except Exception:
+        #             ownership_lines.append(f"  {ent} -> (assign failed)")
+        #     if ownership_lines:
+        #         print(
+        #             f"[Server {args.server_id}] node_to_starts ownership map:\n"
+        #             + "\n".join(ownership_lines)
+        #         )
 
     shard = GraphShard(
         edges,
         server_id=args.server_id,
         server_count=args.server_count,
         partitioner=partitioner,
+        owned_hints=owned_hints,
     )
     server = GraphShardServer(
         host=args.host,
@@ -1256,13 +1167,17 @@ def main() -> None:
             f"[Server {server.server_id}] auth_table: loaded {len(auth_table)} starts, keeping {len(server.auth_table)} local entries"
         )
     if args.node_to_starts_file:
-        loaded = load_node_to_starts_table(Path(args.node_to_starts_file))
-        server.node_to_starts = filter_node_to_starts_for_shard(
-            loaded, shard.partitioner, shard.server_id
-        )
+        server.node_to_starts = filtered_node_to_starts
         print(
-            f"[Server {server.server_id}] node_to_starts: loaded {len(loaded)} entities, keeping {len(server.node_to_starts)} local entities"
+            f"[Server {server.server_id}] node_to_starts: loaded {len(filtered_node_to_starts)} local entities"
+            + (
+                f" from {node_to_starts_path}"
+                if node_to_starts_path is not None
+                else ""
+            )
         )
+    if static_mapping:
+        server.owner_map = static_mapping
 
     if args.dump_auth:
         dump = {
