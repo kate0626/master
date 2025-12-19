@@ -16,13 +16,13 @@ from urllib import request as urllib_request
     
     [PPRコマンド]
     python3 base/auth-subgraph-server/controller.py \
-    --servers 1 \
-    --server-endpoints 10.58.60.5:3000 \
+    --servers 2 \
+    --server-endpoints 10.58.60.5:3000 10.58.60.11:3000 \
+    --edges dataset/Louvain/graph/test.gr \
     --walks 1 \
     --alpha 0.1 \
     --seed 42 \
-    --start-node-all \
-    --subgraph-file base/auth-subgraph-server/subgraph_index.json
+    --start-node-all 
 
 """
 
@@ -44,7 +44,7 @@ def parse_arguments() -> argparse.Namespace:
         help="Run walks for every node listed in --subgraph-file instead of only --start-node.",
     )
     parser.add_argument(
-        "--subgraph-file",
+        "--edges",
         type=str,
         default=None,
         help="Path to subgraph_index.json (required when --start-node-all is given).",
@@ -103,62 +103,26 @@ def fetch_access_stats(endpoint: str, timeout: float) -> Optional[dict]:
 # === 追加ここまで ===
 
 
-def load_start_nodes_from_subgraph(subgraph_path: Path) -> List[int]:
-    """
-    Collect node ids described in the given subgraph JSON.
-    Edge entries (edge_u_v) are skipped.
-    """
-    data = json.loads(subgraph_path.read_text(encoding="utf-8"))
+def load_start_nodes_from_graph(edge_path: Path) -> List[int]:
+
     nodes: Set[int] = set()
-
-    node_to_group = data.get("node_to_group", {})
-    if isinstance(node_to_group, dict):
-        for entity, _ in node_to_group.items():
-            if isinstance(entity, str) and entity.startswith("edge_"):
+    with edge_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
                 continue
-            try:
-                nodes.add(int(entity))
-            except (TypeError, ValueError):
-                continue
-
-    groups = data.get("groups", [])
-    if isinstance(groups, dict):
-        group_iter = groups.values()
-    elif isinstance(groups, list):
-        group_iter = groups
-    else:
-        group_iter = []
-
-    for entry in group_iter:
-        if not isinstance(entry, dict):
-            continue
-        for raw_node in entry.get("nodes", []):
-            try:
-                nodes.add(int(raw_node))
-            except (TypeError, ValueError):
-                continue
-
+            u, v = map(int, line.split())
+            nodes.add(u)
+            nodes.add(v)
     return sorted(nodes)
 
 
 def main() -> None:
     args = parse_arguments()
     if args.start_node_all:
-        if not args.subgraph_file:
-            raise SystemExit(
-                "--start-node-all requires --subgraph-file to enumerate nodes."
-            )
-        subgraph_path = Path(args.subgraph_file)
-        if not subgraph_path.exists():
-            raise SystemExit(f"Subgraph file not found: {subgraph_path}")
-        start_nodes = load_start_nodes_from_subgraph(subgraph_path)
-        if not start_nodes:
-            raise SystemExit(
-                f"No node entries were found in subgraph file: {subgraph_path}"
-            )
-        print(
-            f"[Controller] Running PPR for all {len(start_nodes)} start nodes defined in {subgraph_path}"
-        )
+        graph_path = Path(args.edges)  # 例: dataset/test.gr
+        start_nodes = load_start_nodes_from_graph(graph_path)
+        print(f"[Controller] start nodes from graph: {start_nodes}")
     else:
         start_nodes = [int(args.start_node)]
 
@@ -362,9 +326,9 @@ def main() -> None:
         ppr_scores = {
             entity: count / total_visits for entity, count in global_access.items()
         }
-        top_ppr = sorted(
-            ppr_scores.items(), key=lambda kv: kv[1], reverse=True
-        )[: min(10, len(ppr_scores))]
+        top_ppr = sorted(ppr_scores.items(), key=lambda kv: kv[1], reverse=True)[
+            : min(10, len(ppr_scores))
+        ]
         print(
             f"[Controller] PPR computed for {len(ppr_scores)} entities (total visits={total_visits})"
         )

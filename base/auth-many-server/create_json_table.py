@@ -62,26 +62,110 @@ def read_edge_list(path: Path) -> List[Tuple[int, int]]:
 """
 
 
+# def build_auth_table2(
+#     edges: List[Tuple[int, int]], ng_ratio: float = 0.0
+# ) -> Dict[str, Dict[str, List]]:
+#     """
+#     Build mapping: start_node_int -> {"n": [nodes], "e": [edge_ids]}
+
+#     - ng_ratio=0.0:
+#         各 start から見て、自分自身を含む全ノード・全エッジが許可。
+#     - ng_ratio>0.0:
+#         各 start について、ノード/エッジごとに独立に確率で NG にする。
+#         ただし補正により、2部グラフ上で:
+#           * 許可ノード → 少なくとも1本の許可 incident edge
+#           * 許可エッジ → 少なくとも1つの許可端点ノード
+#         を必ず満たす。
+#     """
+#     by_start: Dict[int, Dict[str, Set]] = defaultdict(lambda: {"n": set(), "e": set()})
+#     all_nodes: Set[int] = set()
+#     all_edges: Set[str] = set()
+
+#     # ノードごとの incident edges, edge ごとの (u,v) を保持
+#     incident_edges: Dict[int, List[str]] = defaultdict(list)
+#     edge_endpoints: Dict[str, Tuple[int, int]] = {}
+
+#     # --- 前処理：全ノード・エッジ集合と incident 情報 ---
+#     for u, v in edges:
+#         all_nodes.update([u, v])
+#         edge_id = make_edge_id(u, v)
+#         all_edges.add(edge_id)
+#         incident_edges[u].append(edge_id)
+#         incident_edges[v].append(edge_id)
+#         edge_endpoints[edge_id] = (u, v)
+
+#     # --- (1) ランダムに許可/不許可を決めるフェーズ ---
+#     for start in all_nodes:
+#         nodes_ok: Set[int] = set()
+#         edges_ok: Set[str] = set()
+
+#         # ノード認可リスト（自分以外）
+#         for node in all_nodes:
+#             if node == start:
+#                 continue
+#             # 確率 (1 - ng_ratio) で「許可」
+#             if random.random() >= ng_ratio:
+#                 nodes_ok.add(node)
+
+#         # 自分自身は必ず許可
+#         nodes_ok.add(start)
+
+#         # エッジ認可リスト
+#         for edge_id in all_edges:
+#             if random.random() >= ng_ratio:
+#                 edges_ok.add(edge_id)
+
+#         by_start[start]["n"] = nodes_ok
+#         by_start[start]["e"] = edges_ok
+
+#     # --- (2) 補正フェーズ ---
+#     #     2部グラフとして「許可頂点（ノード/エッジ）」が必ず
+#     #     少なくとも1つの許可隣接を持つように調整する。
+#     for start in all_nodes:
+#         nodes_set: Set[int] = by_start[start]["n"]
+#         edges_set: Set[str] = by_start[start]["e"]
+
+#         # 2-1: 許可ノードごとに、incident edge のうち
+#         #      少なくとも1本が許可されるようにする
+#         for node in list(nodes_set):
+#             incident = incident_edges.get(node)
+#             if not incident:
+#                 # 元グラフで孤立ノードならそもそも隣接がないのでスキップ
+#                 continue
+#             # すでに incident の中に1本でも許可エッジがあればOK
+#             if any(edge in edges_set for edge in incident):
+#                 continue
+#             # 1本も許可されていない場合は、incident からランダムに1本許可する
+#             chosen_edge = random.choice(incident)
+#             edges_set.add(chosen_edge)
+
+#         # 2-2: 許可エッジごとに、端点ノードのうち
+#         #      少なくとも1つが許可ノードに含まれるようにする
+#         for edge_id in list(edges_set):
+#             u, v = edge_endpoints[edge_id]
+#             # すでにどちらかが許可ノードならOK
+#             if u in nodes_set or v in nodes_set:
+#                 continue
+#             # 両端ともまだ許可ノードに含まれていない場合、
+#             # どちらか一方だけを許可ノードとして追加
+#             chosen_node = random.choice((u, v))
+#             nodes_set.add(chosen_node)
+
+
+#     # --- 出力用に整形 ---
+#     out: Dict[str, Dict[str, List]] = {}
+#     for start, sets in by_start.items():
+#         ns = sorted(int(x) for x in sets["n"])
+#         es = sorted(str(x) for x in sets["e"])
+#         out[str(start)] = {"n": ns, "e": es}
+#     return out
 def build_auth_table2(
     edges: List[Tuple[int, int]], ng_ratio: float = 0.0
 ) -> Dict[str, Dict[str, List]]:
-    """
-    Build mapping: start_node_int -> {"n": [nodes], "e": [edge_ids]}
-
-    - ng_ratio=0.0:
-        各 start から見て、自分自身を含む全ノード・全エッジが許可。
-    - ng_ratio>0.0:
-        各 start について、ノード/エッジごとに独立に確率で NG にする。
-        ただし補正により、2部グラフ上で:
-          * 許可ノード → 少なくとも1本の許可 incident edge
-          * 許可エッジ → 少なくとも1つの許可端点ノード
-        を必ず満たす。
-    """
     by_start: Dict[int, Dict[str, Set]] = defaultdict(lambda: {"n": set(), "e": set()})
     all_nodes: Set[int] = set()
     all_edges: Set[str] = set()
 
-    # ノードごとの incident edges, edge ごとの (u,v) を保持
     incident_edges: Dict[int, List[str]] = defaultdict(list)
     edge_endpoints: Dict[str, Tuple[int, int]] = {}
 
@@ -99,18 +183,14 @@ def build_auth_table2(
         nodes_ok: Set[int] = set()
         edges_ok: Set[str] = set()
 
-        # ノード認可リスト（自分以外）
         for node in all_nodes:
             if node == start:
                 continue
-            # 確率 (1 - ng_ratio) で「許可」
             if random.random() >= ng_ratio:
                 nodes_ok.add(node)
 
-        # 自分自身は必ず許可
         nodes_ok.add(start)
 
-        # エッジ認可リスト
         for edge_id in all_edges:
             if random.random() >= ng_ratio:
                 edges_ok.add(edge_id)
@@ -119,39 +199,25 @@ def build_auth_table2(
         by_start[start]["e"] = edges_ok
 
     # --- (2) 補正フェーズ ---
-    #     2部グラフとして「許可頂点（ノード/エッジ）」が必ず
-    #     少なくとも1つの許可隣接を持つように調整する。
     for start in all_nodes:
         nodes_set: Set[int] = by_start[start]["n"]
         edges_set: Set[str] = by_start[start]["e"]
 
-        # 2-1: 許可ノードごとに、incident edge のうち
-        #      少なくとも1本が許可されるようにする
+        # 2-1: 許可ノードごとに incident edge を最低1本許可
         for node in list(nodes_set):
             incident = incident_edges.get(node)
             if not incident:
-                # 元グラフで孤立ノードならそもそも隣接がないのでスキップ
                 continue
-            # すでに incident の中に1本でも許可エッジがあればOK
             if any(edge in edges_set for edge in incident):
                 continue
-            # 1本も許可されていない場合は、incident からランダムに1本許可する
-            chosen_edge = random.choice(incident)
-            edges_set.add(chosen_edge)
+            edges_set.add(random.choice(incident))
 
-        # 2-2: 許可エッジごとに、端点ノードのうち
-        #      少なくとも1つが許可ノードに含まれるようにする
+        # 2-2: 許可エッジの端点は必ず許可ノードに含める（subgraph版と同じ）
         for edge_id in list(edges_set):
             u, v = edge_endpoints[edge_id]
-            # すでにどちらかが許可ノードならOK
-            if u in nodes_set or v in nodes_set:
-                continue
-            # 両端ともまだ許可ノードに含まれていない場合、
-            # どちらか一方だけを許可ノードとして追加
-            chosen_node = random.choice((u, v))
-            nodes_set.add(chosen_node)
+            nodes_set.add(u)
+            nodes_set.add(v)
 
-    # --- 出力用に整形 ---
     out: Dict[str, Dict[str, List]] = {}
     for start, sets in by_start.items():
         ns = sorted(int(x) for x in sets["n"])

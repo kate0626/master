@@ -100,36 +100,17 @@ def main() -> None:
         "server_count": args.servers,
     }
 
-    t0 = time.perf_counter()
-    # print(
-    #     f"[Controller] Sending /walk to server {start_server} ({endpoint}) with payload: start_node={args.start_node}, alpha={args.alpha}, walks={args.walks}"
-    # )
     # リクエスト送信
     res = start_walk_on_server(endpoint, payload, timeout=args.request_timeout)
-    t1 = time.perf_counter()
+    # t1 = time.perf_counter()
     walks = res.get("walks", [])
     metrics = res.get("metrics", {})
+    # remote_serverからきた実行時間をここで受け取る
     duration = metrics.get("duration_sec", res.get("duration"))
     total_steps = sum(len(w.get("path", [])) for w in walks)
     avg_len = total_steps / max(1, len(walks))
-    print(
-        f"[Controller] Received {len(walks)} walks in {t1-t0:.3f}s. Avg length: {avg_len:.3f}, total steps: {total_steps}"
-    )
-    if duration is not None:
-        try:
-            duration_val = float(duration)
-        except (TypeError, ValueError):
-            duration_val = None
-        if duration_val is not None:
-            print(f"[Controller] duration {duration_val:.6f}s")
-
-    if metrics:
-        wall_start = metrics.get("wall_start_time")
-        wall_end = metrics.get("wall_end_time")
-        # if wall_start and wall_end:
-        #     print(
-        #         f"[Controller] server wall clock window: {wall_start} -> {wall_end} (epoch {metrics.get('wall_start_epoch')} -> {metrics.get('wall_end_epoch')})"
-        #     )
+    print(f"Avg length: {avg_len:.3f}, total steps: {total_steps}")
+    print(f"[Controller] duration {duration:.6f}s")
 
     # サーバー訪問回数のカウント
     server_visits = defaultdict(int)
@@ -139,11 +120,6 @@ def main() -> None:
     print("Server visit counts:")
     for sid in range(args.servers):
         print(f"  Server {sid}: {server_visits.get(sid, 0)}")
-
-    # optionally print each walk
-    # for i, w in enumerate(walks):
-    #     print(f"Walk[{i}] path: {w.get('path')}")
-    #     print(f"Walk[{i}] servers: {w.get('servers')}")
 
     # === 追加ここから ===
     # 各サーバのアクセス統計を取得し、統合する
@@ -156,6 +132,8 @@ def main() -> None:
     # ★ 認可時間・回数
     total_auth_time = 0.0
     total_auth_calls = 0
+    total_walk_time = 0.0
+    total_walk_calls = 0
 
     for sid, endpoint in enumerate(args.server_endpoints):
         stats = fetch_access_stats(endpoint, timeout=args.request_timeout)
@@ -176,8 +154,13 @@ def main() -> None:
         # ★ 認可時間（秒）と回数を加算
         total_auth_time += float(stats.get("auth_time_total", 0.0))
         total_auth_calls += int(stats.get("auth_calls", 0))
+        total_walk_time = float(stats.get("walk_time_total", 0.0))
+        total_walk_calls = int(stats.get("walk_calls", 0))
 
     print(f"Total authorization time (sum over all servers): {total_auth_time:.6f} s")
+    print(f"Total authorization calls (sum over all servers): {total_auth_calls}")
+    print(f"Total walk time (sum over all servers): {total_walk_time:.6f} s")
+    print(f"Total walk calls (sum over all servers): {total_walk_calls}")
     if total_auth_calls > 0:
         avg_ms = (total_auth_time / total_auth_calls) * 1000.0
         print(
@@ -223,6 +206,8 @@ def main() -> None:
         # ★ 認可時間の集計
         "auth_time_total": total_auth_time,
         "auth_calls": total_auth_calls,
+        "walk_time_total": total_walk_time,
+        "walk_calls": total_walk_calls,
     }
     out_path = Path(output_filename)
     out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")

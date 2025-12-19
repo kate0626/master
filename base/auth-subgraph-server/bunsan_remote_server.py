@@ -19,41 +19,36 @@ from datetime import datetime, timezone
 NodeId = Union[int, str]
 NodeOrEdgeId = Union[int, str]
 
-
-def parse_entity_id(raw: Any) -> NodeOrEdgeId:
-    """
-    Convert a raw node/edge identifier to the normalized form used in shards.
-    Integers stay ints; edge ids keep their string form (edge_u_v); everything
-    else falls back to string.
-    """
-    if isinstance(raw, int):
-        return raw
-    if isinstance(raw, str) and raw.startswith("edge_"):
-        return raw
-    try:
-        return int(raw)
-    except Exception:
-        return str(raw)
-
-
 """
     python3 base/auth-many-server/remote_server.py --edges ./dataset/Louvain/graph/karate.gr --server-count 2 --server-id 1 --host 10.58.60.6 --port 3000 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --auth-file base/auth-many-server/auth_by_start.json
-    python3 base/auth-many-server/remote_server.py --edges ./dataset/Louvain/graph/karate.gr --server-count 2 --server-id 1 --host 10.58.60.6 --port 3000 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --auth-file base/auth-many-server/auth_by_start.json
+    
+    サーバ５　2台
+    python3 base/auth-subgraph-server/remote_server.py --edges ./dataset/Louvain/graph/karate.gr --server-count 2 --server-id 1 --host 10.58.60.5 --port 3000 --server-endpoints 10.58.60.5:3000 10.58.60.6:3000 --node-to-starts-file base/auth-many-server/node_to_starts.json --subgraph-file base/auth-subgraph-server/subgraph_index.json
+    
+    python3 base/auth-subgraph-server/remote_server.py --edges ./dataset/Louvain/graph/karate.gr --server-count 1 --server-id 0 --host 10.58.60.5 --port 3000 --server-endpoints 10.58.60.5:3000 --node-to-starts-file base/auth-many-server/node_to_starts.json --subgraph-file base/auth-subgraph-server/subgraph_index.json
 
 
-1台で行う時
-    python3 base/auth-many-server/remote_server.py   --server-id 0 --server-count 1  --edges dataset/Louvain/graph/karate.gr   --host 10.58.60.5 --port 3000   --server-endpoints 10.58.60.5:3000   --auth-file base/auth-many-server/auth_by_start.json --node-to-starts-file base/auth-many-server/karate/node_to_starts.json
+    [PPRコマンド]
+    python3 base/auth-subgraph-server/remote_server.py \
+        --edges dataset/Louvain/graph/test.gr \
+        --server-count 2 \
+        --server-id 0 \
+        --host 10.58.60.5 \
+        --port 3000 \
+        --server-endpoints 10.58.60.5:3000 10.58.60.11:3000 \
+        --node-to-starts-file base/auth-many-server/test/node_to_starts_server0.json \
+        --subgraph-file base/auth-subgraph-server/test/bi/subgraph_server0_size10.json
+    
+    python3 base/auth-subgraph-server/remote_server.py \
+    --edges dataset/Louvain/graph/test.gr \
+    --server-count 2 \
+    --server-id 1 \
+    --host 10.58.60.11 \
+    --port 3000 \
+    --server-endpoints 10.58.60.5:3000 10.58.60.11:3000 \
+    --node-to-starts-file base/auth-many-server/test/node_to_starts_server1.json \
+    --subgraph-file base/auth-subgraph-server/test/bi/subgraph_server1_size10.json
 
-2台で行うとき
-    python3 base/auth-many-server/remote_server.py   --server-id 0 --server-count 2   --edges dataset/Louvain/graph/karate.gr   --host 10.58.60.5 --port 3000   --server-endpoints 10.58.60.5:3000   --auth-file base/auth-many-server/auth_by_start.json --node-to-starts-file base/auth-many-server/karate/node_to_starts.json
-    python3 base/auth-many-server/remote_server.py   --server-id 1 --server-count 2   --edges dataset/Louvain/graph/karate.gr   --host 10.58.60.11 --port 3000   --server-endpoints 10.58.60.11:3000   --auth-file base/auth-many-server/auth_by_start.json --node-to-starts-file base/auth-many-server/karate/node_to_starts.json
-
-
-    形式的にauthを渡しているだけで実際にはnode_to_startしか持てていない
-    認可データは server_id でフィルタされ、リモートのエンティティは /authorize 経由で所有サーバに確認する
-
-    パーティショナ:
-      - デフォルト: modulo のみ（他のパーティショナは未実装につき無効）
 """
 
 
@@ -111,15 +106,6 @@ class ModuloPartitioner:
     assign_node(node_id)：ノードを node_id % server_count で割り当てる（シンプル均等割り当て）。
     assign_edge(u, v)：エッジは (a * 1_000_003 + b) % server_count のハッシュで割り当てる。1_000_003 は大きな素数で衝突分散に寄与する。
     assign_entity(entity_id)：与えられた entity_id が整数ならノード割り当て、文字列で edge_* ならエッジ割当を行う。形式不正や未対応型なら例外を投げる。
-
-    auth-server/のremote_serverに関して考える
-
-        使用するグラフはtest/以下の部分である
-        どのノードにアクセスできるのか（ノード：アクセスできる始点）を示したnode_to_start.jsonがあり、これはstartの後についている数字のサーバに別々に配置されるようにしたい
-
-        例えば、node_to_start0.jsonに書いてあるものはサーバ０に配置されるようにしたい
-
-        これを参照して現在のpeerwalkを行いたいので修正して
     """
 
     def __init__(self, server_count: int) -> None:
@@ -146,42 +132,6 @@ class ModuloPartitioner:
         raise TypeError(f"Unsupported entity id type: {entity_id!r}")
 
 
-class StaticPartitioner:
-    """
-    Explicit entity -> server mapping. Falls back to modulo for unknown ids.
-    """
-
-    def __init__(
-        self,
-        server_count: int,
-        mapping: Dict[str, int],
-        fallback: Optional[ModuloPartitioner] = None,
-    ) -> None:
-        if server_count <= 0:
-            raise ValueError("server_count must be positive")
-        self.server_count = server_count
-        self.mapping = {str(k): int(v) % server_count for k, v in mapping.items()}
-        self.fallback = fallback or ModuloPartitioner(server_count)
-
-    def assign_node(self, node_id: int) -> int:
-        key = str(node_id)
-        if key in self.mapping:
-            return self.mapping[key]
-        return self.fallback.assign_node(node_id)
-
-    def assign_edge(self, u: int, v: int) -> int:
-        edge_id = make_edge_id(u, v)
-        if edge_id in self.mapping:
-            return self.mapping[edge_id]
-        return self.fallback.assign_edge(u, v)
-
-    def assign_entity(self, entity_id: NodeId) -> int:
-        key = str(entity_id)
-        if key in self.mapping:
-            return self.mapping[key]
-        return self.fallback.assign_entity(entity_id)
-
-
 class GraphShard:
     """
     Each shard owns two types of entities:
@@ -198,38 +148,21 @@ class GraphShard:
     """
 
     def __init__(
-        self,
-        edges: Sequence[Tuple[int, int]],
-        server_id: int,
-        server_count: int,
-        partitioner: Optional[Any] = None,
-        owned_hints: Optional[Set[NodeOrEdgeId]] = None,
+        self, edges: Sequence[Tuple[int, int]], server_id: int, server_count: int
     ) -> None:
         if server_id < 0 or server_id >= server_count:
             raise ValueError("server_id must satisfy 0 <= server_id < server_count")
 
         self.server_id = server_id
-        self.partitioner = partitioner or ModuloPartitioner(server_count)
-        self.owned_hints: Set[NodeOrEdgeId] = owned_hints or set()
+        self.partitioner = ModuloPartitioner(server_count)
         self.local_entities: Set[NodeId] = set()
         self.neighbor_map: Dict[NodeId, List[Neighbor]] = defaultdict(list)
 
         for u, v in edges:
             edge_id = make_edge_id(u, v)
-            # ヒントにあれば自サーバ所有を優先
-            if u in self.owned_hints:
-                u_owner = self.server_id
-            else:
-                u_owner = self.partitioner.assign_node(u)
-            if v in self.owned_hints:
-                v_owner = self.server_id
-            else:
-                v_owner = self.partitioner.assign_node(v)
-            if edge_id in self.owned_hints:
-                edge_owner = self.server_id
-            else:
-                # 端点が異なる場合でもエッジは「端点のどちらか」に必ず置く（ここでは小さいserver_id側に寄せる）
-                edge_owner = u_owner if u_owner <= v_owner else v_owner
+            u_owner = self.partitioner.assign_node(u)
+            v_owner = self.partitioner.assign_node(v)
+            edge_owner = self.partitioner.assign_edge(u, v)
 
             if u_owner == self.server_id:
                 self._ensure_entity(u)
@@ -253,14 +186,7 @@ class GraphShard:
     def get_neighbors(self, entity_id: NodeId) -> Optional[List[Neighbor]]:
         if entity_id not in self.local_entities:
             return None
-        resolved: List[Neighbor] = []
-        for n in self.neighbor_map.get(entity_id, []):
-            try:
-                owner = self.partitioner.assign_entity(n.node_id)
-            except Exception:
-                owner = n.server_id
-            resolved.append(Neighbor(n.node_id, owner))
-        return resolved
+        return list(self.neighbor_map.get(entity_id, []))
 
 
 # ---------------------------------------------------------------------------
@@ -292,18 +218,56 @@ def load_entity_auth_table(
             continue
         nodes = set(int(x) for x in v.get("n", []) if x is not None)
         edges = set(str(x) for x in v.get("e", []) if x is not None)
-        out[start] = {"n": nodes, "e": edges}
+        groups = set(int(x) for x in v.get("groups", []) if x is not None)
+        out[start] = {"n": nodes, "e": edges, "groups": groups}
     return out
+
+
+## ここ確認
+def load_subgraph_index(path: Optional[Union[str, Path]]) -> Dict[str, Any]:
+    """
+    サブグラフ定義（node_to_group, groups）を読み込む。
+    Format:
+    {
+      "node_to_group": {"1": 0, "edge_1_2": 0},
+      "groups": [{ "id": 0, "nodes": [1,2,3], "edges": ["edge_1_2"]}]
+    }
+    """
+    if path is None:
+        return {"node_to_group": {}, "groups": {}}
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Subgraph index not found: {p}")
+
+    data = json.loads(p.read_text(encoding="utf-8"))
+    node_to_group: Dict[NodeOrEdgeId, int] = {}
+    for node, gid in data.get("node_to_group", {}).items():
+        try:
+            entity_key: NodeOrEdgeId = int(node)
+        except Exception:
+            entity_key = str(node)
+        try:
+            node_to_group[entity_key] = int(gid)
+        except Exception:
+            continue
+    group_map: Dict[int, Dict[str, Set[NodeOrEdgeId]]] = {}
+    for item in data.get("groups", []):
+        gid = item.get("id")
+        if gid is None:
+            continue
+        try:
+            gid_int = int(gid)
+        except Exception:
+            continue
+        nodes = set(int(x) for x in item.get("nodes", []) if x is not None)
+        edges = set(str(x) for x in item.get("edges", []) if x is not None)
+        group_map[gid_int] = {"nodes": nodes, "edges": edges}
+    return {"node_to_group": node_to_group, "groups": group_map}
 
 
 def load_node_to_starts_table(
     path: Optional[Union[str, Path]],
 ) -> Dict[NodeOrEdgeId, Set[int]]:
-    """
-    JSON format:
-      { "3": [1,5,7], "edge_1_2": [1,2] }
-    Returns: { target_entity (int or str) -> set(start_nodes) }
-    """
     if path is None:
         return {}
     p = Path(path)
@@ -324,72 +288,6 @@ def load_node_to_starts_table(
                 continue
         out[entity_key] = starts
     return out
-
-
-def resolve_node_to_starts_path(base_path: Path, server_id: int) -> Path:
-    """
-    Prefer server-specific node_to_starts files when present.
-    e.g. node_to_starts_server0.json or node_to_starts0.json next to the base file.
-    Falls back to the provided base_path if no variant exists.
-    """
-    stem = base_path.stem
-    suffix = base_path.suffix
-    candidates = [
-        base_path.with_name(f"{stem}_server{server_id}{suffix}"),
-        base_path.with_name(f"{stem}{server_id}{suffix}"),
-        base_path,
-    ]
-    for cand in candidates:
-        if cand.exists():
-            return cand
-    raise FileNotFoundError(
-        f"node_to_starts file not found. Tried: {[str(c) for c in candidates]}"
-    )
-
-
-def filter_node_to_starts_for_shard(
-    node_to_starts: Dict[NodeOrEdgeId, Set[int]],
-    partitioner: Any,
-    server_id: int,
-) -> Dict[NodeOrEdgeId, Set[int]]:
-    """
-    Keep only the authorization entries for entities owned by this shard.
-    This lets each server avoid holding permissions for entities it does not host.
-    """
-    filtered: Dict[NodeOrEdgeId, Set[int]] = {}
-    for entity, starts in node_to_starts.items():
-        try:
-            owner = partitioner.assign_entity(entity)
-        except Exception:
-            continue
-        if owner == server_id:
-            filtered[entity] = set(starts)
-    return filtered
-
-
-def filter_auth_table_for_shard(
-    auth_table: Dict[int, Dict[str, Set[Any]]],
-    partitioner: Any,
-    server_id: int,
-) -> Dict[int, Dict[str, Set[Any]]]:
-    """
-    Trim auth_table so each shard only keeps entries for entities it owns.
-    """
-    filtered: Dict[int, Dict[str, Set[Any]]] = {}
-    for start, entries in auth_table.items():
-        local_nodes = {
-            n
-            for n in entries.get("n", set())
-            if partitioner.assign_entity(n) == server_id
-        }
-        local_edges = {
-            e
-            for e in entries.get("e", set())
-            if partitioner.assign_entity(e) == server_id
-        }
-        if local_nodes or local_edges:
-            filtered[start] = {"n": local_nodes, "e": local_edges}
-    return filtered
 
 
 # ---------------------------------------------------------------------------
@@ -431,9 +329,8 @@ class PeerWalker:
         max_hops: int = 100000,
         auth_table: Optional[Dict[int, Dict[str, Set[str]]]] = None,
         stats_collector: Optional[Any] = None,
-        ppr_mode: bool = False,
+        subgraph_index: Optional[Dict[str, Any]] = None,  # 追加
         node_to_starts: Optional[Dict[NodeOrEdgeId, Set[int]]] = None,
-        owner_map: Optional[Dict[str, int]] = None,
     ):
         self.shard = shard
         self.endpoints = [
@@ -444,9 +341,70 @@ class PeerWalker:
         self.max_hops = max_hops
         self.auth_table = auth_table or {}
         self.stats_collector = stats_collector
-        self.ppr_mode = ppr_mode
+        subgraph_index = subgraph_index or {}
+        self.entity_to_group: Dict[NodeOrEdgeId, int] = {}
+        raw_map = subgraph_index.get("node_to_group", {})
+        if isinstance(raw_map, dict):
+            for key, gid in raw_map.items():
+                try:
+                    entity_key: NodeOrEdgeId = int(key)
+                except Exception:
+                    entity_key = str(key)
+                try:
+                    self.entity_to_group[entity_key] = int(gid)
+                except Exception:
+                    continue
+        self.group_members: Dict[int, Dict[str, Set[NodeOrEdgeId]]] = {}
+        raw_groups = subgraph_index.get("groups", {})
+
+        if isinstance(raw_groups, list):
+            # パターン1: [{"id": ..., "nodes": [...], "edges": [...]}, ...] 形式
+            entries = raw_groups
+            for entry in entries:
+                gid = entry.get("id")
+                if gid is None:
+                    continue
+                try:
+                    gid_int = int(gid)
+                except Exception:
+                    continue
+                node_members = set(
+                    int(x) for x in entry.get("nodes", []) if x is not None
+                )
+                edge_members = set(
+                    str(x) for x in entry.get("edges", []) if x is not None
+                )
+                self.group_members[gid_int] = {
+                    "nodes": node_members,
+                    "edges": edge_members,
+                }
+
+        elif isinstance(raw_groups, dict):
+            # パターン2: { gid: {"nodes": [... or set], "edges": [... or set]}, ... } 形式
+            for gid_key, members in raw_groups.items():
+                try:
+                    gid_int = int(gid_key)
+                except Exception:
+                    gid_int = gid_key  # 念のため
+
+                node_members = set(
+                    int(x) for x in members.get("nodes", []) if x is not None
+                )
+                edge_members = set(
+                    str(x) for x in members.get("edges", []) if x is not None
+                )
+                self.group_members[gid_int] = {
+                    "nodes": node_members,
+                    "edges": edge_members,
+                }
+
+        else:
+            # 想定外の形式なら空のまま
+            self.group_members = {}
+        # ここまで
+        self.granted_groups: Set[int] = set()
+        self.denied_groups: Set[int] = set()
         self.node_to_starts: Dict[NodeOrEdgeId, Set[int]] = node_to_starts or {}
-        self.owner_map: Dict[str, int] = owner_map or {}
 
     # --- Authorization helpers ---------------------------------------------
     def _record_auth_cost(self, duration: float) -> None:
@@ -458,77 +416,96 @@ class PeerWalker:
         if hasattr(server, "auth_calls"):
             server.auth_calls += 1
 
-    def _is_locally_allowed(self, start_node: Optional[int], entity: Any) -> bool:
+    def _is_allowed_entity(self, start_node: Optional[int], entity: Any) -> bool:
         if start_node is None:
             return False
-        allowed_starts = self.node_to_starts.get(entity)
-        return bool(allowed_starts and start_node in allowed_starts)
+        if isinstance(entity, int):
+            allowed_starts = self.node_to_starts.get(entity)
+            # print("ノードを認可", allowed_starts)
+            # print(bool(allowed_starts and start_node in allowed_starts))
+            return bool(allowed_starts and start_node in allowed_starts)
+        if isinstance(entity, str):
+            allowed_starts = self.node_to_starts.get(entity)
+            # print("エッジを認可", allowed_starts)
+            # print(bool(allowed_starts and start_node in allowed_starts))
+            return bool(allowed_starts and start_node in allowed_starts)
+        return False
 
-    # 遷移予定のサーバが異なるサーバだった時の流れ
-    def _check_remote_authorization(
-        self, target_server: int, start_node: Optional[int], entity: Any
-    ) -> bool:
-        # ここでそのサーバに行かないと認可テーブルがないので確認できないのではないか
-        # きちんとターゲットサーバがあることを確認
-        if target_server < 0 or target_server >= len(self.endpoints):
-            # print(
-            #     f"[Server {self.shard.server_id}] auth check skipped: endpoint for server {target_server} is missing"
-            # )
+    def _load_group_cache(self, state: Dict[str, Any]) -> None:
+        granted = state.get("granted_groups") or []
+        denied = state.get("denied_groups") or []
+        self.granted_groups = {int(g) for g in granted}
+        self.denied_groups = {int(g) for g in denied}
+
+    def _group_state_payload(self) -> Dict[str, List[int]]:
+        if not self.entity_to_group:
+            return {}
+        return {
+            "granted_groups": sorted(self.granted_groups),
+            "denied_groups": sorted(self.denied_groups),
+        }
+
+    def _evaluate_group_access(
+        # グループの認可是非を決める
+        # あるエンティティ（ノード or エッジ）が属するグループ丸ごとを認可すべきかどうか判
+        self,
+        start_node: Optional[int],
+        entity: NodeOrEdgeId,
+    ) -> Optional[bool]:
+        if start_node is None:
             return False
-        url = f"{self.endpoints[target_server].rstrip('/')}/authorize"
-        payload = {"entity": entity, "start_node": start_node}
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib_request.Request(
-            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
-        )
-        try:
-            with urllib_request.urlopen(req, timeout=self.request_timeout) as resp:
-                body = json.loads(resp.read())
-            return bool(body.get("allowed"))
-        except Exception as exc:
-            # print(
-            #     f"[Server {self.shard.server_id}] auth check failed on server {target_server} for {entity}: {exc}"
-            # )
+        # エンティティが含まれているグループを確認
+        # print("現在の線予定のエンティティ", entity)
+        gid = self.entity_to_group.get(entity)
+        # print("所属のgroup", gid)
+        if gid is None:
+            return None
+        # すでに許可・無許可グループの判定が行われている場合は２度目の確認をスキップ可能
+        if gid in self.granted_groups:
+            return True
+        if gid in self.denied_groups:
             return False
+        # そのグループに含まれるすべてのメンバーについて調べる
+        members = self.group_members.get(gid, {})
+        member_nodes = members.get("nodes", set())
+        print("member構成", member_nodes)
+        member_edges = members.get("edges", set())
+        print("member構成", member_edges)
 
-    # def _authorize_candidate(
-    #     self, start_node: Optional[int], candidate: Dict[str, Any]
-    # ) -> bool:
-    #     owner_sid = int(candidate["server_id"])
-    #     target = candidate["node_id"]
-    def _authorize_candidate(
-        self, start_node: Optional[int], candidate: Dict[str, Any]
-    ) -> bool:
-        target = candidate["node_id"]
+        # print("DEBUG gid=", gid)
+        # print("DEBUG group_members keys=", self.group_members.keys())
+        # print("DEBUG raw members =", self.group_members.get(gid))
+        # print("DEBUG type of members =", type(self.group_members.get(gid)))
 
-        owner_sid: Optional[int] = None
-        if self.owner_map:
-            owner_sid = self.owner_map.get(str(target))
-        if owner_sid is None:
-            try:
-                owner_sid = int(candidate.get("server_id"))
-            except Exception:
-                owner_sid = self.shard.partitioner.assign_entity(target)
+        allowed = True
+        for node in member_nodes:
+            # 一つでもNGが見つかればそのグループIDはdenied_groupsに追加
+            if not self._is_allowed_entity(start_node, node):
+                print("アクセスできないノードが見つかりました")
+                allowed = False
+                break
+        if allowed:
+            for edge in member_edges:
+                if not self._is_allowed_entity(start_node, edge):
+                    allowed = False
+                    break
 
-        t0 = time.perf_counter()
-        if owner_sid == self.shard.server_id:
-            # 移動さきが同じサーバだったらローカルで認可判定
-            allowed = self._is_locally_allowed(start_node, target)
-            # print(
-            #     f"  → ローカル認可結果: {'allowed' if allowed else 'denied'} for entity {target} from start_node {start_node}"
-            # )
+        if allowed:
+            self.granted_groups.add(gid)
         else:
-            # 異なるサーバだったらリモート認可確認
-            print(
-                f" サーバが異なるのでリモート認可確認 on server {owner_sid} for entity {target} from start_node {start_node},今のサーバとノードは {self.shard.server_id}, {target}移動前のノードは {start_node}"
-            )
-            allowed = self._check_remote_authorization(owner_sid, start_node, target)
-        t1 = time.perf_counter()
-        print(
-            f"  → Authorization result: {'allowed' if allowed else 'denied'} for entity {target} from start_node {start_node}"
-        )
-        self._record_auth_cost(t1 - t0)
+            self.denied_groups.add(gid)
         return allowed
+
+    def _is_entity_authorized(
+        # 認可状態を確認する関数
+        self,
+        start_node: Optional[int],
+        entity: NodeOrEdgeId,
+    ) -> bool:
+        group_result = self._evaluate_group_access(start_node, entity)
+        if group_result is None:
+            return self._is_allowed_entity(start_node, entity)
+        return bool(group_result)
 
     def _get_local_neighbors(self, entity_id: Any) -> List[Dict[str, Any]]:
         neighbors = self.shard.get_neighbors(entity_id)
@@ -536,6 +513,7 @@ class PeerWalker:
             return []
         return [asdict(n) for n in neighbors]
 
+    # NOTE: ここが認可アルゴリズムの重要な部分
     def _select_next_neighbor(
         self,
         rng: random.Random,
@@ -545,41 +523,29 @@ class PeerWalker:
     ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         if not neighbors:
             return None, None
-
-        # 「まだ選んでいないものを選ぶ」ために、インデックスをシャッフルして順番に試す
         indices = list(range(len(neighbors)))
         rng.shuffle(indices)
 
-        max_retries = len(neighbors)  # ログ用に残しておく
+        max_retries = len(neighbors)
         next_choice: Optional[Dict[str, Any]] = None
-        # 認可は行わず、最初の neighbor をそのまま採用ー＞使用せずにBaseを使用
-        # for idx in indices:
-        #     candidate = neighbors[idx]
-        #     cid = candidate["node_id"]
 
-        #     # 認可カウンタだけは更新（不要なら削除してOK）
-        #     self._record_authorization_attempt(current_entity)
-        #     self._record_authorization_success(current_entity, cid)
-
-        #     # 認可なしなので allowed = True に強制
-        #     next_choice = candidate
-        #     break
-        # ここから
-        # 隣接が全部NGになるまで繰り返すが、
-        # 同じ neighbor は二度と選ばない（indices を一度ずつ見る）
         for idx in indices:
             self._record_authorization_attempt(current_entity)
-
             candidate = neighbors[idx]
             cid = candidate["node_id"]
 
-            if self._authorize_candidate(start_node, candidate):
+            t0 = time.perf_counter()
+            # allowed = self._is_entity_authorized(start_node, cid)
+            allowed = self._authorize_candidate(start_node, candidate)
+
+            t1 = time.perf_counter()
+            self._record_auth_cost(t1 - t0)
+
+            if allowed:
                 next_choice = candidate
-                # 選んだノードに関して認可を行う
                 self._record_authorization_success(current_entity, cid)
                 break
-            else:
-                self._record_authorization_denial(current_entity)
+            self._record_authorization_denial(current_entity)
 
         if next_choice is None:
             print(
@@ -591,7 +557,6 @@ class PeerWalker:
             }
             return None, denial
         # ここまで
-
         return next_choice, None
 
     def _post_continue(self, server_id: int, state: dict) -> dict:
@@ -621,9 +586,9 @@ class PeerWalker:
         alpha = float(state["alpha"])
         hops_done = int(state.get("hops_done", 0))
         start_node = self._resolve_start_node(state, path)
+        self._load_group_cache(state)
 
         self._record_entity_visit(current_entity)
-        # 終了確率をクリアした時にのみ遷移
         while hops_done < self.max_hops and rng.random() > alpha:
             hops_done += 1
             owner = self.shard.partitioner.assign_entity(current_entity)
@@ -637,10 +602,10 @@ class PeerWalker:
                     "rng_state": serialize_rng_state(rng),
                     "hops_done": hops_done,
                 }
+                state_out.update(self._group_state_payload())
                 return self._post_continue(owner, state_out)
 
             neighbors = self._get_local_neighbors(current_entity)
-            # あるノードが認可を通るか→通るまで繰り返す
             next_choice, denial_payload = self._select_next_neighbor(
                 rng, neighbors, start_node, current_entity
             )
@@ -673,6 +638,7 @@ class PeerWalker:
                     "rng_state": serialize_rng_state(rng),
                     "hops_done": hops_done,
                 }
+                state_out.update(self._group_state_payload())
                 return self._post_continue(next_server, state_out)
 
         if hops_done >= self.max_hops:
@@ -780,6 +746,10 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+        # print(
+        #     f"[Server {self.server.server_id}] neighbor request for entity {entity} from {self.client_address}"
+        # )
+
         neighbors = self.server.shard.get_neighbors(entity)
         if neighbors is None:
             self.send_error(404, f"Entity {entity} not owned by this shard")
@@ -840,16 +810,17 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             request_timeout=getattr(self.server, "request_timeout", 5.0),
             auth_table=getattr(self.server, "auth_table", None),
             stats_collector=self.server,
-            ppr_mode=getattr(self.server, "ppr_mode", False),
+            subgraph_index=getattr(self.server, "subgraph_index", None),
             node_to_starts=getattr(self.server, "node_to_starts", None),
-            owner_map=getattr(self.server, "owner_map", None),
         )
-        # TIME：計測開示
         start_ts = time.perf_counter()
         wall_start_epoch = time.time()
         wall_start_iso = now_iso()
         results = []
+        propagate_group_state = bool(walker.entity_to_group)
         for i in range(walks):
+            walker.granted_groups = set()
+            walker.denied_groups = set()
             rng = random.Random(seed if seed is None else (seed + i))
             initial_state = {
                 "start_node": int(start_node),
@@ -860,25 +831,18 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
                 "rng_state": serialize_rng_state(rng),
                 "hops_done": 0,
             }
+            if propagate_group_state:
+                initial_state["granted_groups"] = []
+                initial_state["denied_groups"] = []
+                # ★ ここから RW本体（continue_from_state）の処理時間を計測
+            t0 = time.perf_counter()
             res = walker.continue_from_state(initial_state)
-            results.append(res)
-            # time.sleep(0.01)
-        wall_end_epoch = time.time()
-        wall_end_iso = now_iso()
-        duration = time.perf_counter() - start_ts
-        self.server.walk_time_total += duration
-        self.server.walk_calls += 1
+            dt = time.perf_counter() - t0
 
-        # ★ ここから RW本体（continue_from_state）の処理時間を計測
-        t0 = time.perf_counter()
-        res = walker.continue_from_state(initial_state)
-        dt = time.perf_counter() - t0
+            # ★ サーバ内のRW処理時間として蓄積
+            self.server.walk_time_total += dt
+            self.server.walk_calls += 1
 
-        # ★ サーバ内のRW処理時間として蓄積
-        self.server.walk_time_total += dt
-        self.server.walk_calls += 1
-
-        # 計測終了
         payload = {
             "walks": results,
             "metrics": {
@@ -905,62 +869,25 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         if state is None:
             return
 
+        # print(
+        #     f"[Server {self.server.server_id}] /continue_walk from {self.client_address} hops_done={state.get('hops_done', 0)}"
+        # )
         walker = PeerWalker(
             self.server.shard,
             endpoints=self.server.endpoints,
             request_timeout=getattr(self.server, "request_timeout", 5.0),
             auth_table=getattr(self.server, "auth_table", None),
             stats_collector=self.server,
-            ppr_mode=getattr(self.server, "ppr_mode", False),
+            subgraph_index=getattr(self.server, "subgraph_index", None),
             node_to_starts=getattr(self.server, "node_to_starts", None),
-            owner_map=getattr(self.server, "owner_map", None),
         )
-        # try:
-        #     res = walker.continue_from_state(state)
-        # except Exception as exc:
-        #     self.send_error(500, f"Error during continue_walk: {exc}")
-        #     return
         try:
-            # ★ ここから RW本体（continue_from_state）の処理時間を計測
-            t0 = time.perf_counter()
             res = walker.continue_from_state(state)
-            dt = time.perf_counter() - t0
-
-            # ★ サーバ内のRW処理時間として蓄積
-            self.server.walk_time_total += dt
-            self.server.walk_calls += 1
-
         except Exception as exc:
             self.send_error(500, f"Error during continue_walk: {exc}")
             return
 
         self._write_json(res)
-
-    def _handle_authorize(self) -> None:
-        payload = self._read_json_body()
-        # リクエストボディの読解
-        # print(f"[Server {self.server.server_id}] /authorize request: {payload}")
-        if payload is None:
-            return
-
-        raw_entity = payload.get("entity")
-        start_node = payload.get("start_node")
-        entity = parse_entity_id(raw_entity)
-        try:
-            start_int = int(start_node)
-        except Exception:
-            self.send_error(400, "'start_node' must be an integer")
-            return
-
-        allowed_starts = self.server.node_to_starts.get(entity, set())
-        allowed = bool(start_int in allowed_starts)
-        self._write_json(
-            {
-                "allowed": allowed,
-                "entity": entity,
-                "server_id": self.server.server_id,
-            }
-        )
 
     def log_message(self, format: str, *args) -> None:
         return
@@ -1002,8 +929,12 @@ class GraphShardServer(ThreadingHTTPServer):
         self.request_timeout = request_timeout
         # auth_table will be attached by main() if provided
         self.auth_table: Dict[int, Dict[str, Set[Any]]] = {}
+        self.subgraph_index: Dict[str, Any] = {}
+        self.ppr_mode = False
         self.node_to_starts: Dict[NodeOrEdgeId, Set[int]] = {}
-        self.owner_map: Dict[str, int] = {}
+        # ★ /authorize で使うためにサーバ側にも持たせる
+        self.entity_to_group: Dict[NodeOrEdgeId, int] = {}
+        self.group_members: Dict[int, Dict[str, Set[NodeOrEdgeId]]] = {}
 
         # 認可およびアクセスの統計カウンタを初期化
         self.access_counter = Counter()  # 各ノード・エッジへのアクセス回数
@@ -1015,7 +946,6 @@ class GraphShardServer(ThreadingHTTPServer):
         # ★ 認可にかかった時間の合計（秒）と呼び出し回数
         self.auth_time_total = 0.0
         self.auth_calls = 0
-        # RWにかかった時間の合計（秒）と呼び出し回数
         self.walk_time_total = 0.0
         self.walk_calls = 0
 
@@ -1066,15 +996,21 @@ def parse_arguments() -> argparse.Namespace:
         help="Optional JSON file path mapping start_node -> allowed entities (n/e).",
     )
     parser.add_argument(
+        "--subgraph-file",
+        type=str,
+        default=None,
+        help="Optional JSON file describing node->subgraph mapping.",
+    )
+    parser.add_argument(
+        "--ppr-mode",
+        action="store_true",
+        help="Use restart-style random walk (alpha == restart probability).",
+    )
+    parser.add_argument(
         "--node-to-starts-file",
         type=str,
         default=None,
         help="Optional JSON path mapping target_node -> allowed start nodes.",
-    )
-    parser.add_argument(
-        "--dump-auth",
-        action="store_true",
-        help="Dump filtered auth/node_to_starts to auth_dump_server{sid}.json for debugging.",
     )
     return parser.parse_args()
 
@@ -1086,44 +1022,7 @@ def main() -> None:
         raise FileNotFoundError(f"Edge list not found: {edge_path}")
 
     edges = load_edge_list(edge_path)
-
-    # パーティショナはデフォルト Modulo。サーバ専用 node_to_starts がある場合は StaticPartitioner で強制上書き。
-    base_partitioner = ModuloPartitioner(args.server_count)
-    partitioner: Any = base_partitioner
-
-    filtered_node_to_starts: Dict[NodeOrEdgeId, Set[int]] = {}
-    owned_hints: Set[NodeOrEdgeId] = set()
-    node_to_starts_path: Optional[Path] = None
-    loaded_nts: Dict[NodeOrEdgeId, Set[int]] = {}
-    static_mapping: Dict[str, int] = {}
-    is_server_specific = False
-    if args.node_to_starts_file:
-        base_nts_path = Path(args.node_to_starts_file)
-        node_to_starts_path = resolve_node_to_starts_path(base_nts_path, args.server_id)
-        loaded_nts = load_node_to_starts_table(node_to_starts_path)
-        is_server_specific = node_to_starts_path.resolve() != base_nts_path.resolve()
-        # if is_server_specific:
-        # サーバ専用ファイルは全件をこのサーバに紐付ける
-        filtered_node_to_starts = loaded_nts
-        owned_hints = set(filtered_node_to_starts.keys())
-        static_mapping = {str(ent): int(args.server_id) for ent in loaded_nts}
-        partitioner = StaticPartitioner(
-            server_count=args.server_count,
-            mapping=static_mapping,
-            fallback=base_partitioner,
-        )
-        ownership_lines = [
-            f"  {ent} -> server {args.server_id}"
-            for ent in sorted(loaded_nts, key=lambda x: str(x))
-        ]
-
-    shard = GraphShard(
-        edges,
-        server_id=args.server_id,
-        server_count=args.server_count,
-        partitioner=partitioner,
-        owned_hints=owned_hints,
-    )
+    shard = GraphShard(edges, server_id=args.server_id, server_count=args.server_count)
     server = GraphShardServer(
         host=args.host,
         port=args.port,
@@ -1136,31 +1035,21 @@ def main() -> None:
     auth_table = {}
     if args.auth_file:
         auth_table = load_entity_auth_table(Path(args.auth_file))
-        server.auth_table = filter_auth_table_for_shard(
-            auth_table, shard.partitioner, shard.server_id
-        )
+        server.auth_table = auth_table
+    if args.subgraph_file:
+        server.subgraph_index = load_subgraph_index(Path(args.subgraph_file))
+        server.entity_to_group = server.subgraph_index.get("node_to_group", {})
+        server.group_members = server.subgraph_index.get("groups", {})
 
+    server.ppr_mode = bool(args.ppr_mode)
     if args.node_to_starts_file:
-        server.node_to_starts = filtered_node_to_starts
-
-    if static_mapping:
-        server.owner_map = static_mapping
-
-    if args.dump_auth:
-        dump = {
-            "server_id": server.server_id,
-            "auth_table": {
-                str(k): {"n": sorted(v.get("n", [])), "e": sorted(v.get("e", []))}
-                for k, v in server.auth_table.items()
-            },
-            "node_to_starts": {
-                str(k): sorted(list(v)) for k, v in server.node_to_starts.items()
-            },
-        }
-        dump_path = Path(f"auth_dump_server{server.server_id}.json")
-        dump_path.write_text(
-            json.dumps(dump, ensure_ascii=False, indent=2), encoding="utf-8"
+        server.node_to_starts = load_node_to_starts_table(
+            Path(args.node_to_starts_file)
         )
+
+    # print(
+    #     f"[Server {server.server_id}] Serving {len(shard.local_entities)} entities (nodes + edges) on {args.host}:{args.port} / {args.server_count} servers"
+    # )
 
     def dump_access_stats():
         stats = {
@@ -1172,9 +1061,6 @@ def main() -> None:
             # ★ 追加
             "auth_time_total": server.auth_time_total,
             "auth_calls": server.auth_calls,
-            # ★ 追加
-            "walk_time_total": server.walk_time_total,
-            "walk_calls": server.walk_calls,
         }
         out_path = Path(f"access_stats_server{server.server_id}.json")
         out_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
