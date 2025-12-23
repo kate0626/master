@@ -3,32 +3,13 @@
 auth_by_start.json と node_to_starts.json をサーバIDごとに事前分割するツール。
 どちらか片方だけの分割でも利用可能（node_to_starts のみ等）。
 
-例:
-  # node_to_starts だけ分割する例
-  python3 base/auth-many-server/split_auth_tables.py \
-      --node-to-starts-file base/auth-many-server/node_to_starts.json \
-      --server-count 3 \
-      --out-dir base/auth-many-server/splits
+python3 base/auth-many-server/only_split_auth_tables.py \
+--node-to-starts-file base/auth-many-server/test/node_to_starts_0.0.json \
+--server-count 2 \
+--partitioner-type node-edge-fixed \
+--out-dir base/auth-many-server/splits/test/0.0
 
-  # ★ nodeは全部 server0、edgeは全部 server1 に固定して分割する例
-  python3 base/auth-many-server/split_auth_tables.py \
-      --node-to-starts-file base/auth-many-server/node_to_starts.json \
-      --server-count 2 \
-      --partitioner-type node-edge-fixed \
-      --out-dir base/auth-many-server/splits
 
-  # METIS分割を使う例（graph.part.3 は 1列形式でパートIDを並べたファイル想定）
-  python3 base/auth-many-server/split_auth_tables.py \
-      --node-to-starts-file base/auth-many-server/node_to_starts.json \
-      --server-count 2 \
-      --partitioner-type metis \
-      --metis-partition-file dataset/Louvain/community/graph.part.3 \
-      --out-dir base/auth-many-server/splits
-
-出力（out-dir配下）:
-  auth_by_start_server0.json, node_to_starts_server0.json
-  auth_by_start_server1.json, node_to_starts_server1.json
-  ...
 """
 from __future__ import annotations
 
@@ -452,26 +433,13 @@ def main() -> None:
     else:
         partitioner = ModuloPartitioner(args.server_count)
 
-    auth_table = load_auth_table(args.auth_file)
     node_to_starts = load_node_to_starts(args.node_to_starts_file)
 
+    # コマンドで売った分だけこちらに入力として返ってくる
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for sid in range(args.server_count):
-        if auth_table:
-            local_auth = filter_auth_table_for_shard(auth_table, partitioner, sid)
-            auth_path = out_dir / f"auth_by_start_server{sid}.json"
-            auth_path.write_text(
-                json.dumps(
-                    to_serializable_auth(local_auth), indent=2, ensure_ascii=False
-                ),
-                encoding="utf-8",
-            )
-            print(
-                f"[server {sid}] auth_by_start: keep {len(local_auth)} starts -> {auth_path}"
-            )
-
         if node_to_starts:
             local_n2s = filter_node_to_starts_for_shard(
                 node_to_starts, partitioner, sid

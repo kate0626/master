@@ -6,21 +6,22 @@ set -euo pipefail
 ############################################################
 
 TIMEOUT=30
-GRAPH=test
+GRAPH=fb-caltech-connected
 EDGE_FILE="dataset/Louvain/graph/${GRAPH}.gr"
 REPO_DIR="./"
 LOG_DIR="runs/auth/C1:bunsan/split"
 RW_WAKLS=10
 ALPHA=0.1
+NG_RATE="0.0"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/${GRAPH}.log"
-# exec > >(tee -a "${LOG_FILE}") 2>&1
-exec > "${LOG_FILE}" 2>&1
+exec > >(tee -a "${LOG_FILE}") 2>&1
+# exec > "${LOG_FILE}" 2>&1
 
 # エッジノード別々のサーバのものを考えるにはSplitをつける
 SERVERS=(
-  "host=ab05 id=0 ip=10.58.60.5 port=3000 nts=base/auth-many-server/${GRAPH}//node_to_starts_server0.json"
-  "host=ab11 id=1 ip=10.58.60.11 port=3000 nts=base/auth-many-server/${GRAPH}//node_to_starts_server1.json"
+  "host=ab06 id=0 ip=10.58.60.6 port=3000 nts=base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts_server0.json"
+  "host=ab11 id=1 ip=10.58.60.11 port=3000 nts=base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts_server1.json"
 )
 
 SERVER_COUNT=${#SERVERS[@]}
@@ -32,16 +33,18 @@ done
 SERVER_ENDPOINTS_STR="${SERVER_ENDPOINTS[*]}"
 TARGET_LOG="^\\[Server"
 
-REMOTE_CMD_BASE="python3 base/auth-many-server/remote_server.py \\
+REMOTE_CMD_BASE="python3 base/auth-many-server/split_remote_server.py \\
   --server-count ${SERVER_COUNT} \\
   --edges ${EDGE_FILE} \\
-  --server-endpoints ${SERVER_ENDPOINTS_STR}"
+  --server-endpoints ${SERVER_ENDPOINTS_STR} \\
+  --owned-hints-only"
+
 
 cleanup() {
   echo ">>> [CLEANUP] 全サーバ停止中..."
   for entry in "${SERVERS[@]}"; do
     eval "$entry"
-    ssh -o ConnectTimeout=5 "$host" "pkill -f base/auth-many-server/remote_server.py || true" >/dev/null 2>&1 || true
+    ssh -o ConnectTimeout=5 "$host" "pkill -f base/auth-many-server/split_remote_server.py || true" >/dev/null 2>&1 || true
   done
   echo ">>> [CLEANUP] 完了。"
 }
@@ -53,9 +56,9 @@ start_remote_server() {
   ssh "$host" bash -c "'
 set -euo pipefail
 cd ${REPO_DIR}
-${REMOTE_CMD_BASE} --server-id ${id} --host ${ip} --port ${port} --node-to-starts-file ${nts} > remote_server.log 2>&1 &
+${REMOTE_CMD_BASE} --server-id ${id} --host ${ip} --port ${port} --node-to-starts-file ${nts} > split_remote_server.log 2>&1 &
 PID=\$!
-timeout ${TIMEOUT}s bash -c \"grep -m1 '${TARGET_LOG}' <(tail -f remote_server.log)\" \\
+timeout ${TIMEOUT}s bash -c \"grep -m1 '${TARGET_LOG}' <(tail -f split_remote_server.log)\" \\
   && echo \"[INFO] ${host}: 起動OK\" || echo \"[WARN] ${host}: タイムアウト (${TIMEOUT}s)\"
 '"
 }
@@ -66,15 +69,19 @@ for entry in "${SERVERS[@]}"; do
 done
 wait
 
-# node_to_starts からスタートノードを全取得（all.sh のループ構成に合わせる）
+# node_to_starts からスタートノードを全取得（サーバ起動と同じ splits を参照）
 START_NODES_LIST=(${(s: :)$(
-  python3 - "base/auth-many-server/${GRAPH}/node_to_starts_server0.json" "base/auth-many-server/${GRAPH}/node_to_starts_server1.json" <<'PY'
+  python3 - \
+    "base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts_server0.json" \
+    "base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts_server1.json" \
+  <<'PY'
 import json, sys
 starts=set()
 for path in sys.argv[1:]:
     try:
         data=json.load(open(path))
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] failed to load {path}: {e}", file=sys.stderr)
         continue
     for vals in data.values():
         if not isinstance(vals, list):
@@ -88,21 +95,18 @@ print(" ".join(str(x) for x in sorted(starts)))
 PY
 )})
 
-total_start=$(python3 - <<'PY'
-import time; print(time.time())
-PY
-)
-
 for start_node in "${START_NODES_LIST[@]}"; do
   echo "=== [START_NODE] ${start_node} ==="
-  python3 base/auth-many-server/controller.py \
+  python3 base/auth-many-server/split_controller.py \
     --servers 2 \
-    --server-endpoints 10.58.60.5:3000 10.58.60.11:3000 \
+    --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
     --start-node "${start_node}" \
     --walks ${RW_WAKLS} \
     --alpha ${ALPHA} \
-    --seed 42
+    --seed 42 \
+    --node-to-starts-file "base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts.json"
 done
+
 
 ############################################################
 # Controller duration の合計（ログから集計）

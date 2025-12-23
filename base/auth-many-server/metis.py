@@ -9,7 +9,7 @@ from pathlib import Path
 from collections import defaultdict
 
 ## TODO: ここのグラフ種類は変更の必要
-GRAPH_NAME = "fb-caltech-connected"
+GRAPH_NAME = "fb-pages-food"
 edge_path = Path(f"dataset/Louvain/graph/{GRAPH_NAME}.gr")
 out_path = Path(f"base/auth-many-server/{GRAPH_NAME}/bipartite.metis")
 node_shift = 1  # 元が0始まりなら+1して1始まりに揃える。既に1始まりなら0にする。
