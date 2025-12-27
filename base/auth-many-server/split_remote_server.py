@@ -4,8 +4,10 @@ from __future__ import annotations
 import argparse
 import atexit
 import json
+import os
 import random
 import re
+import resource
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, asdict
@@ -77,6 +79,93 @@ def split_owned_entities(local_entities: Set[NodeId]) -> Tuple[List[int], List[s
     return nodes, edges
 
 
+def get_process_rss_kb() -> int:
+    """
+    Linux: /proc/self/status の VmRSS(kB) を読む。
+    取れなければ ru_maxrss を返す（LinuxではKB）。
+    """
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    return int(parts[1])
+    except Exception:
+        pass
+
+    try:
+        return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except Exception:
+        return -1
+
+
+def summarize_tables(server: Any) -> Dict[str, Any]:
+    """
+    サーバが保持している「グラフ隣接」「認可テーブル」「owner_map」「Counter」の規模とRSSを要約する。
+    """
+    shard = server.shard
+
+    nm = getattr(shard, "neighbor_map", {}) or {}
+    graph_entities = 0
+    graph_total_neighbors = 0
+    try:
+        graph_entities = len(nm)
+        for v in nm.values():
+            graph_total_neighbors += len(v)
+    except Exception:
+        pass
+
+    local_entities = 0
+    try:
+        local_entities = len(getattr(shard, "local_entities", set()) or set())
+    except Exception:
+        pass
+
+    nts = getattr(server, "node_to_starts", {}) or {}
+    auth_entities = 0
+    auth_total_starts = 0
+    try:
+        auth_entities = len(nts)
+        for s in nts.values():
+            auth_total_starts += len(s)
+    except Exception:
+        pass
+
+    owner_map_size = 0
+    try:
+        owner_map_size = len(getattr(server, "owner_map", {}) or {})
+    except Exception:
+        pass
+
+    counters_total_keys = 0
+    for name in [
+        "access_counter",
+        "authorized_counter",
+        "authorization_attempt_counter",
+        "authorization_denied_counter",
+        "transition_counter",
+    ]:
+        c = getattr(server, name, None)
+        if c is None:
+            continue
+        try:
+            counters_total_keys += len(c)
+        except Exception:
+            pass
+
+    return {
+        "pid": os.getpid(),
+        "rss_kb": get_process_rss_kb(),
+        "graph_entities": graph_entities,
+        "graph_total_neighbors": graph_total_neighbors,
+        "local_entities": local_entities,
+        "auth_entities": auth_entities,
+        "auth_total_starts": auth_total_starts,
+        "owner_map_size": owner_map_size,
+        "counters_total_keys": counters_total_keys,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Partitioners
 # ---------------------------------------------------------------------------
@@ -128,8 +217,6 @@ class StaticPartitioner:
 # ---------------------------------------------------------------------------
 # Shard
 # ---------------------------------------------------------------------------
-
-
 class GraphShard:
     """
     Bipartite expansion: node <-> edge_entity(edge_u_v) <-> node
@@ -162,13 +249,10 @@ class GraphShard:
         self.owned_hints_only = owned_hints_only
         self.owned_hints: Set[NodeOrEdgeId] = owned_hints or set()
 
-        # ★ 全体隣接: 「グラフに登場する entity」だけをキーに持つ（存在判定できるよう dict）
         self.neighbor_map: Dict[NodeId, List[Neighbor]] = {}
-        # ★ 所有（処理担当）だけ
         self.local_entities: Set[NodeId] = set()
 
         def normalize_entity(ent: Any) -> NodeId:
-            # "1" -> 1, edge_* はそのまま
             if isinstance(ent, int):
                 return ent
             if isinstance(ent, str):
@@ -191,7 +275,6 @@ class GraphShard:
             if ent not in self.neighbor_map:
                 self.neighbor_map[ent] = []
 
-        # (A) 全体隣接を構築（owned に依存させない）
         for u, v in edges:
             u = normalize_entity(u)
             v = normalize_entity(v)
@@ -205,18 +288,14 @@ class GraphShard:
             u_owner = owner_of(u)
             v_owner = owner_of(v)
 
-            # node -> edge_entity
             self.neighbor_map[u].append(Neighbor(edge_id, edge_owner))
             self.neighbor_map[v].append(Neighbor(edge_id, edge_owner))
-            # edge_entity -> node
             self.neighbor_map[edge_id].append(Neighbor(u, u_owner))
             self.neighbor_map[edge_id].append(Neighbor(v, v_owner))
 
-        # (B) 所有集合(local_entities)を後から決める（隣接とは分離）
         if self.owned_hints_only:
             hints_str = {str(x) for x in self.owned_hints}
 
-            # ヒントにあるがエッジリストに出ない（孤立）entityも「存在」だけはさせる
             for x in self.owned_hints:
                 nx = normalize_entity(x)
                 ensure_key(nx)
@@ -229,20 +308,7 @@ class GraphShard:
                 if owner_of(ent) == self.server_id:
                     self.local_entities.add(ent)
 
-    def is_owned(self, entity_id: Any) -> bool:
-        ent = entity_id
-        if isinstance(ent, str) and (not ent.startswith("edge_")) and ent.isdigit():
-            try:
-                ent = int(ent)
-            except Exception:
-                pass
-        return ent in self.local_entities
-
     def get_neighbors(self, entity_id: Any) -> Optional[List[Neighbor]]:
-        """
-        - グラフに存在しない entity -> None
-        - 存在するが次数0 -> []
-        """
         ent = entity_id
         if isinstance(ent, str) and (not ent.startswith("edge_")) and ent.isdigit():
             try:
@@ -255,7 +321,6 @@ class GraphShard:
             return None
 
         neigh = list(self.neighbor_map.get(ent, []))
-        print(f"[GraphShard] neighbors({ent!r}) deg={len(neigh)} sample={neigh[:10]}")
         return neigh
 
 
@@ -313,8 +378,6 @@ def build_owner_map_from_sibling_node_to_starts_files(
 ) -> Dict[str, int]:
     dir_path = base_path.parent
     owner_map: Dict[str, int] = {}
-
-    # server_id が2桁以上もあり得るので \d+ にする
     pat = re.compile(r"node_to_starts_server(\d+)\.json$")
 
     for p in sorted(dir_path.glob("node_to_starts_server*.json")):
@@ -464,20 +527,17 @@ class PeerWalker:
         target = candidate["node_id"]
         owner_sid: Optional[int] = None
         if self.owner_map:
-            # print("同じサーバ")
             owner_sid = self.owner_map.get(str(target))
         if owner_sid is None:
             try:
                 owner_sid = int(candidate.get("server_id"))
             except Exception:
                 owner_sid = self.shard.partitioner.assign_entity(target)
-        # 認可の時間の計測
+
         t0 = time.perf_counter()
         if owner_sid == self.shard.server_id:
-            # print("同じサーバなのでそのまま認可")
             allowed = self._is_locally_allowed(start_node, target)
         else:
-            # print("異なるサーバなので通信して確認")
             allowed = self._check_remote_authorization(owner_sid, start_node, target)
         self._record_auth_cost(time.perf_counter() - t0)
         return allowed
@@ -497,7 +557,6 @@ class PeerWalker:
         with urllib_request.urlopen(req, timeout=self.request_timeout) as resp:
             return json.loads(resp.read())
 
-    # --- Stats helpers
     def _bump(self, attr: str, key: Any) -> None:
         if self.stats_collector is None:
             return
@@ -545,12 +604,10 @@ class PeerWalker:
             return None, None
 
         indices = list(range(len(neighbors)))
-        # print("近隣候補はこちら", indices)
         rng.shuffle(indices)
         for idx in indices:
             self._record_authorization_attempt(current_entity)
             cand = neighbors[idx]
-            # print("遷移先候補はこちら")
             cid = cand["node_id"]
             if self._authorize_candidate(start_node, cand):
                 self._record_authorization_success(current_entity, cid)
@@ -564,7 +621,6 @@ class PeerWalker:
         }
         return None, denial
 
-    # --- Main walk
     def continue_from_state(self, state: dict) -> dict:
         current_sid = self.shard.server_id
 
@@ -669,6 +725,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
                 "auth_calls": self.server.auth_calls,
                 "walk_time_total": self.server.walk_time_total,
                 "walk_calls": self.server.walk_calls,
+                "memory": summarize_tables(self.server),
             }
             self._write_json(payload)
             return
@@ -776,7 +833,6 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
 
             self.server.walk_time_total += dt
             self.server.walk_calls += 1
-
             results.append(res)
 
         wall_end_epoch = time.time()
@@ -817,7 +873,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         try:
             t0 = time.perf_counter()
             res = walker.continue_from_state(state)
-            dt = time.perf_counter() - t0
+            _ = time.perf_counter() - t0
         except Exception as exc:
             self.send_error(500, f"Error during continue_walk: {exc}")
             return
@@ -838,9 +894,6 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             return
 
         allowed_starts = self.server.node_to_starts.get(entity, set())
-        # print(
-        #     f"スタートノード{start_int}が許可ノード{allowed_starts}の中にあるのかを確かめる"
-        # )
         allowed = bool(start_int in allowed_starts)
         self._write_json(
             {"allowed": allowed, "entity": entity, "server_id": self.server.server_id}
@@ -937,15 +990,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--port", type=int, default=8000, help="Port to expose the shard server."
     )
-
-    # ★ここが invalid nargs の原因だった：nargs="" はダメ。nargs="+" が正解。
     parser.add_argument(
         "--server-endpoints",
         nargs="+",
         required=True,
         help="Endpoints for all servers in order (host:port).",
     )
-
     parser.add_argument(
         "--request-timeout",
         type=float,
@@ -988,7 +1038,6 @@ def main() -> None:
     owned_hints: Set[NodeOrEdgeId] = set()
     owner_map: Dict[str, int] = {}
 
-    # node_to_starts があれば、所有権を node_to_starts_server*.json から構築し、StaticPartitioner を使う
     if args.node_to_starts_file:
         base_nts_path = Path(args.node_to_starts_file)
         nts_path = resolve_node_to_starts_path(base_nts_path, args.server_id)
@@ -1030,7 +1079,6 @@ def main() -> None:
         request_timeout=args.request_timeout,
     )
 
-    # auth table
     if args.auth_file:
         auth_table = load_entity_auth_table(Path(args.auth_file))
         server.auth_table = filter_auth_table_for_shard(
@@ -1059,7 +1107,6 @@ def main() -> None:
         dump_path.write_text(
             json.dumps(dump, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        # print(f"[Server {server.server_id}] dumped auth to {dump_path}")
 
     def dump_access_stats() -> None:
         stats = {
@@ -1072,6 +1119,7 @@ def main() -> None:
             "auth_calls": server.auth_calls,
             "walk_time_total": server.walk_time_total,
             "walk_calls": server.walk_calls,
+            "memory": summarize_tables(server),
         }
         out_path = Path(f"access_stats_server{server.server_id}.json")
         out_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")

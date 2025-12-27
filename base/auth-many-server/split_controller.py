@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Optional, Set, Union
+from typing import Any, Dict, Optional, Set, Union
 from urllib import request as urllib_request
-import re
 
 NodeOrEdgeId = Union[int, str]
 
@@ -100,25 +100,41 @@ def parse_arguments() -> argparse.Namespace:
         "--request-timeout", default=10.0, type=float, help="HTTP timeout seconds."
     )
 
-    # ★追加：remote_server と同じ node_to_starts を参照して開始サーバを正しく決めたい
+    # remote_server と同じ node_to_starts を参照して開始サーバを正しく決めたい
     parser.add_argument(
         "--node-to-starts-file",
         type=str,
         default=None,
         help="(Optional) base node_to_starts.json path. If set, controller chooses start server using owner_map built from node_to_starts_serverX.json files.",
     )
-    # ★追加：デバッグ用に開始サーバ固定もできる
+    # デバッグ用に開始サーバ固定もできる
     parser.add_argument(
         "--force-start-server",
         type=int,
         default=None,
         help="(Optional) If set, always send /walk to this server id.",
     )
+
+    # ★追加：集計結果の保存先
+    parser.add_argument(
+        "--out-dir",
+        type=str,
+        default=".",
+        help="Output directory to save aggregated stats (default: current dir).",
+    )
+    # ★追加：ファイル名プレフィックス（複数start_nodeを回すときに便利）
+    parser.add_argument(
+        "--out-prefix",
+        type=str,
+        default=None,
+        help="(Optional) Prefix for output filename. If omitted, auto-generated from params.",
+    )
     return parser.parse_args()
 
 
-def start_walk_on_server(endpoint: str, payload: dict, timeout: float) -> dict:
-    url = f"http://{endpoint.rstrip('/')}/walk"
+def post_json(endpoint: str, path: str, payload: dict, timeout: float) -> dict:
+    url = endpoint if endpoint.startswith("http") else f"http://{endpoint}"
+    url = url.rstrip("/") + path
     data = json.dumps(payload).encode("utf-8")
     req = urllib_request.Request(
         url, data=data, headers={"Content-Type": "application/json"}, method="POST"
@@ -127,11 +143,20 @@ def start_walk_on_server(endpoint: str, payload: dict, timeout: float) -> dict:
         return json.loads(resp.read())
 
 
+def get_json(endpoint: str, path: str, timeout: float) -> dict:
+    url = endpoint if endpoint.startswith("http") else f"http://{endpoint}"
+    url = url.rstrip("/") + path
+    with urllib_request.urlopen(url, timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
+def start_walk_on_server(endpoint: str, payload: dict, timeout: float) -> dict:
+    return post_json(endpoint, "/walk", payload, timeout=timeout)
+
+
 def fetch_access_stats(endpoint: str, timeout: float) -> Optional[dict]:
-    url = f"http://{endpoint.rstrip('/')}/access_stats"
     try:
-        with urllib_request.urlopen(url, timeout=timeout) as resp:
-            return json.loads(resp.read())
+        return get_json(endpoint, "/access_stats", timeout=timeout)
     except Exception as e:
         print(f"[Controller] Failed to fetch stats from {endpoint}: {e}")
         return None
@@ -151,7 +176,6 @@ def pick_start_server(
             )
         return force_start_server
 
-    # owner_map が作れるならそれに従う（remote_server に合わせる）
     if node_to_starts_file:
         base = Path(node_to_starts_file)
         if base.exists() or base.parent.exists():
@@ -164,15 +188,13 @@ def pick_start_server(
                     )
                 return sid
 
-    # フォールバック：どこに投げても remote_server が転送できるので、0に投げるのが安全
-    # （modulo start_node%servers でもいいが owner_map とズレやすいので 0 推奨）
+    # フォールバック：0に投げるのが安全
     return 0
 
 
 def main() -> None:
     args = parse_arguments()
 
-    # ★強い引数チェック
     if args.servers <= 0:
         raise ValueError("--servers must be positive")
     if len(args.server_endpoints) != args.servers:
@@ -221,7 +243,7 @@ def main() -> None:
     for sid in range(args.servers):
         print(f"  Server {sid}: {server_visits.get(sid, 0)}")
 
-    # 統計統合
+    # 統計統合 + memory（RSS/テーブル規模）も回収
     print("\n[Controller] Collecting access statistics from all servers...")
     global_access = defaultdict(int)
     global_authorized = defaultdict(int)
@@ -234,11 +256,14 @@ def main() -> None:
     total_walk_time = 0.0
     total_walk_calls = 0
 
+    per_server_stats: list[dict] = []
+
     for sid, ep in enumerate(args.server_endpoints):
         stats = fetch_access_stats(ep, timeout=args.request_timeout)
         if not stats:
             continue
         print(f"[Controller] Merging stats from server {sid} ({ep})")
+        per_server_stats.append({"server_id": sid, "endpoint": ep, "stats": stats})
 
         for k, v in stats.get("access", {}).items():
             global_access[k] += int(v)
@@ -279,24 +304,19 @@ def main() -> None:
         failures = global_auth_denied.get(entity, 0)
         failure_rates[entity] = failures / attempts if attempts else 0.0
 
-    if total_attempts:
-        failure_rate = total_denied / total_attempts
-        # print(
-        #     f"[Controller] Authorization totals: attempts={total_attempts}, "
-        #     f"failures={total_denied} ({failure_rate:.2%})"
-        # )
+    # 出力
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-        sorted_entities = sorted(
-            failure_rates.items(), key=lambda kv: kv[1], reverse=True
-        )
-        if sorted_entities:
-            print("[Controller] Failure rate per entity (降順、全件):")
-            for entity, rate in sorted_entities:
-                attempts = global_auth_attempts.get(entity, 0)
-                failures = global_auth_denied.get(entity, 0)
-                # print(f"  {entity}: {failures}/{attempts} failures ({rate:.2%})")
+    if args.out_prefix:
+        prefix = args.out_prefix
+    else:
+        # 例: start=12_walks=10_alpha=0.1_seed=42
+        seed_str = "none" if args.seed is None else str(args.seed)
+        prefix = f"start={int(args.start_node)}_walks={int(args.walks)}_alpha={float(args.alpha)}_seed={seed_str}"
 
-    output_filename = f"{args.walks}_{args.alpha}_global_transition.json"
+    output_filename = f"{prefix}_global_transition.json"
+
     out = {
         "access": dict(global_access),
         "authorized": dict(global_authorized),
@@ -315,11 +335,34 @@ def main() -> None:
             "alpha": float(args.alpha),
             "walks": int(args.walks),
             "seed": args.seed,
+            "server_endpoints": list(args.server_endpoints),
         },
+        # ★追加：サーバごとの /access_stats 生データ（memory含む）
+        "per_server_access_stats": per_server_stats,
     }
-    out_path = Path(output_filename)
+
+    out_path = out_dir / output_filename
     out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
     print(f"[Controller] Saved aggregated transition stats to {out_path}")
+
+    # ★追加：メモリだけ見やすいサマリJSONも別出力（RSS, table sizes）
+    mem_summary = []
+    for item in per_server_stats:
+        sid = item["server_id"]
+        ep = item["endpoint"]
+        stats = item["stats"]
+        mem = stats.get("memory", {})
+        mem_summary.append(
+            {
+                "server_id": sid,
+                "endpoint": ep,
+                **mem,
+            }
+        )
+
+    mem_path = out_dir / f"{prefix}_memory_summary.json"
+    mem_path.write_text(json.dumps(mem_summary, indent=2), encoding="utf-8")
+    print(f"[Controller] Saved memory summary to {mem_path}")
 
 
 if __name__ == "__main__":
