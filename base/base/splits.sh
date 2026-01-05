@@ -6,9 +6,9 @@ set -euo pipefail
 ############################################################
 
 TIMEOUT=120
-GRAPH=karate
+# GRAPH=test
 
-# GRAPH=fb-caltech-connected
+GRAPH=fb-caltech-connected
 EDGE_FILE="dataset/Louvain/graph/${GRAPH}.gr"
 REPO_DIR="./"
 LOG_DIR="runs/auth/C1:bunsan/base"
@@ -16,7 +16,7 @@ RW_WAKLS=100
 ALPHA=0.1
 NG_RATE="0.0"
 # 全ての頂点からではなくて、ランダムな頂点から実行する
-START_NODES_LIST=(1 2 3 4 5)
+START_NODES_LIST=(1 2 3 4 200)
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/${GRAPH}.log"
 : > "${LOG_FILE}"

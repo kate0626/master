@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
+import sys
 
 NodeId = Union[int, str]
 NodeOrEdgeId = Union[int, str]
@@ -106,51 +107,66 @@ def get_process_rss_kb() -> int:
     except Exception:
         pass
 
+    return get_process_rss_kb_max()
+
+
+def get_process_rss_kb_max() -> int:
     try:
         return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     except Exception:
         return -1
 
 
+def deep_getsizeof(obj: Any, seen: Optional[Set[int]] = None) -> int:
+    """
+    Pythonオブジェクトの概算サイズ(byte)を再帰的に推定する。
+    比較目的なので厳密でなくてOK。
+    """
+    if obj is None:
+        return 0
+    if seen is None:
+        seen = set()
+    oid = id(obj)
+    if oid in seen:
+        return 0
+    seen.add(oid)
+
+    size = sys.getsizeof(obj)
+
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            size += deep_getsizeof(k, seen)
+            size += deep_getsizeof(v, seen)
+    elif isinstance(obj, (list, tuple, set, frozenset)):
+        for x in obj:
+            size += deep_getsizeof(x, seen)
+
+    return size
+
+
+def safe_file_size(path: Optional[Union[str, Path]]) -> Optional[int]:
+    if not path:
+        return None
+    try:
+        p = Path(path)
+        return p.stat().st_size
+    except Exception:
+        return None
+
+
 def summarize_tables(server: Any) -> Dict[str, Any]:
-    """
-    サーバが保持している「グラフ隣接」「認可テーブル」「owner_map」「Counter」の規模とRSSを要約する。
-    """
     shard = server.shard
 
     nm = getattr(shard, "neighbor_map", {}) or {}
-    graph_entities = 0
-    graph_total_neighbors = 0
-    try:
-        graph_entities = len(nm)
-        for v in nm.values():
-            graph_total_neighbors += len(v)
-    except Exception:
-        pass
-
-    local_entities = 0
-    try:
-        local_entities = len(getattr(shard, "local_entities", set()) or set())
-    except Exception:
-        pass
-
     nts = getattr(server, "node_to_starts", {}) or {}
-    auth_entities = 0
-    auth_total_starts = 0
-    try:
-        auth_entities = len(nts)
-        for s in nts.values():
-            auth_total_starts += len(s)
-    except Exception:
-        pass
+    owner_map = getattr(server, "owner_map", {}) or {}
 
-    owner_map_size = 0
-    try:
-        owner_map_size = len(getattr(server, "owner_map", {}) or {})
-    except Exception:
-        pass
+    # cache（実際に使っているのは authz_cache）
+    authz_cache = getattr(server, "authz_cache", {}) or {}
+    cache_entries = len(authz_cache) if isinstance(authz_cache, dict) else 0
 
-    counters_total_keys = 0
+    # counters（bytes推定対象としてまとめる）
+    counters_bundle = {}
     for name in [
         "access_counter",
         "authorized_counter",
@@ -159,23 +175,84 @@ def summarize_tables(server: Any) -> Dict[str, Any]:
         "transition_counter",
     ]:
         c = getattr(server, name, None)
-        if c is None:
-            continue
-        try:
-            counters_total_keys += len(c)
-        except Exception:
-            pass
+        if c is not None:
+            counters_bundle[name] = c
+
+    graph_entities = len(nm)
+    graph_total_neighbors = sum(len(v) for v in nm.values())
+
+    auth_entities = len(nts)
+    auth_total_starts = sum(len(v) for v in nts.values())
+
+    counters_total_keys = sum(
+        len(c) for c in counters_bundle.values() if hasattr(c, "__len__")
+    )
+    access_total = sum(int(v) for v in getattr(server, "access_counter", {}).values())
+    authorized_total = sum(
+        int(v) for v in getattr(server, "authorized_counter", {}).values()
+    )
+    attempts_total = sum(
+        int(v) for v in getattr(server, "authorization_attempt_counter", {}).values()
+    )
+    denied_total = sum(
+        int(v) for v in getattr(server, "authorization_denied_counter", {}).values()
+    )
+    transition_total = sum(
+        int(v) for v in getattr(server, "transition_counter", {}).values()
+    )
+
+    auth_table = getattr(server, "auth_table", {}) or {}
+    auth_table_entries = len(auth_table)
+    auth_table_nodes = 0
+    auth_table_edges = 0
+    for entry in auth_table.values():
+        nodes = entry.get("n", set()) if isinstance(entry, dict) else set()
+        edges = entry.get("e", set()) if isinstance(entry, dict) else set()
+        auth_table_nodes += len(nodes) if hasattr(nodes, "__len__") else 0
+        auth_table_edges += len(edges) if hasattr(edges, "__len__") else 0
+
+    # 入力ファイルサイズ
+    edges_path = getattr(server, "edges_path", None)
+    nts_path = getattr(server, "node_to_starts_path", None)
+    auth_path = getattr(server, "auth_file_path", None)
 
     return {
         "pid": os.getpid(),
         "rss_kb": get_process_rss_kb(),
+        "rss_kb_max": get_process_rss_kb_max(),
         "graph_entities": graph_entities,
         "graph_total_neighbors": graph_total_neighbors,
-        "local_entities": local_entities,
+        "local_entities": len(getattr(shard, "local_entities", set()) or set()),
         "auth_entities": auth_entities,
         "auth_total_starts": auth_total_starts,
-        "owner_map_size": owner_map_size,
+        "auth_table_entries": auth_table_entries,
+        "auth_table_nodes": auth_table_nodes,
+        "auth_table_edges": auth_table_edges,
+        "owner_map_size": len(owner_map),
+        "cache_entries": cache_entries,
         "counters_total_keys": counters_total_keys,
+        "counters_total": {
+            "access": access_total,
+            "authorized": authorized_total,
+            "attempts": attempts_total,
+            "denied": denied_total,
+            "transition": transition_total,
+        },
+        # ★追加：推定bytes（比較用）
+        "bytes_est": {
+            "neighbor_map": deep_getsizeof(nm),
+            "node_to_starts": deep_getsizeof(nts),
+            "owner_map": deep_getsizeof(owner_map),
+            "auth_table": deep_getsizeof(auth_table),
+            "authz_cache": deep_getsizeof(authz_cache),
+            "counters": deep_getsizeof(counters_bundle),
+        },
+        # ★追加：参照ファイル（ディスク）
+        "files": {
+            "edges": {"path": edges_path, "bytes": safe_file_size(edges_path)},
+            "node_to_starts": {"path": nts_path, "bytes": safe_file_size(nts_path)},
+            "auth_file": {"path": auth_path, "bytes": safe_file_size(auth_path)},
+        },
     }
 
 
@@ -1026,6 +1103,15 @@ class GraphShardServer(ThreadingHTTPServer):
         self.auth_cache_hit = 0
         self.auth_cache_miss = 0
 
+        # ---- 計測用：このサーバが参照している入力ファイル ----
+        self.edges_path: Optional[str] = None
+        self.node_to_starts_path: Optional[str] = None
+        self.auth_file_path: Optional[str] = None
+
+        # ---- 認可キャッシュ（キャッシュ実装がある場合に使う） ----
+        # ないモデルでは空のままでOK（サイズ0として観測できる）
+        self.auth_cache: Dict[str, bool] = {}
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -1042,7 +1128,7 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--edges",
-        default="./../../dataset/Louvain/graph/karate.gr",
+        default="./../../dataset/Louvain/graph/test.gr",
         help="Path to the shared edge list file.",
     )
     parser.add_argument(
@@ -1151,15 +1237,18 @@ def main() -> None:
         endpoints=args.server_endpoints,
         request_timeout=args.request_timeout,
     )
+    server.edges_path = str(edge_path)
 
     if args.auth_file:
         auth_table = load_entity_auth_table(Path(args.auth_file))
         server.auth_table = filter_auth_table_for_shard(
             auth_table, shard.partitioner, shard.server_id
         )
+        server.auth_file_path = str(Path(args.auth_file))
 
     if args.node_to_starts_file:
         server.node_to_starts = filtered_node_to_starts
+        server.node_to_starts_path = str(nts_path)
 
     if owner_map:
         server.owner_map = owner_map

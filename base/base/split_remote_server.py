@@ -5,6 +5,7 @@ import argparse
 import atexit
 import json
 import os
+import sys
 import random
 import re
 import resource
@@ -80,64 +81,138 @@ def split_owned_entities(local_entities: Set[NodeId]) -> Tuple[List[int], List[s
 
 
 def get_process_rss_kb() -> int:
-    """
-    Linux: /proc/self/status の VmRSS(kB) を読む。
-    取れなければ ru_maxrss を返す（LinuxではKB）。
-    """
+    """Current RSS (kB)."""
     try:
         with open("/proc/self/status", "r", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("VmRSS:"):
-                    parts = line.split()
-                    return int(parts[1])
+                    return int(line.split()[1])
     except Exception:
         pass
-
     try:
         return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     except Exception:
         return -1
 
 
+def get_process_peak_rss_kb() -> int:
+    """Peak RSS (kB). Linux: VmHWM. Fallback to ru_maxrss."""
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1])
+    except Exception:
+        pass
+    try:
+        return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except Exception:
+        return -1
+
+
+def deep_getsizeof(obj: Any, seen: Optional[Set[int]] = None) -> int:
+    """
+    Pythonオブジェクトの概算サイズ(byte)を再帰的に推定する。
+    比較目的なので厳密でなくてOK。
+    """
+    if obj is None:
+        return 0
+    if seen is None:
+        seen = set()
+    oid = id(obj)
+    if oid in seen:
+        return 0
+    seen.add(oid)
+
+    size = sys.getsizeof(obj)
+
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            size += deep_getsizeof(k, seen)
+            size += deep_getsizeof(v, seen)
+    elif isinstance(obj, (list, tuple, set, frozenset)):
+        for x in obj:
+            size += deep_getsizeof(x, seen)
+
+    return size
+
+
+def safe_file_size(path: Optional[Union[str, Path]]) -> Optional[int]:
+    if not path:
+        return None
+    try:
+        p = Path(path)
+        return p.stat().st_size
+    except Exception:
+        return None
+
+
 def summarize_tables(server: Any) -> Dict[str, Any]:
     """
-    サーバが保持している「グラフ隣接」「認可テーブル」「owner_map」「Counter」の規模とRSSを要約する。
+    サーバが保持している「グラフ隣接」「認可テーブル/索引」「owner_map」「Counter」などの
+    空間使用量をまとめる。
+
+    - rss_kb: Peak RSS (VmHWM) を優先（論文の peak memory に対応）
+    - rss_kb_current: 現在RSS (VmRSS)
+    - bytes_est: Pythonオブジェクトの概算deep size（比較用）
+    - bytes_est_total: bytes_estの合計
+    - normalized: bytes/edge, bytes/node（グラフ規模で正規化）
+    - graph: |V|, |E| など “グラフを変えたら必ず変わる” 指標も含める
+    - files: 入力ファイルの path/bytes/mtime を含め、別グラフを読めているか検証可能にする
     """
+
+    def _read_proc_status_kb(key: str) -> Optional[int]:
+        try:
+            with open("/proc/self/status", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith(key):
+                        # e.g., "VmRSS:\t  12345 kB"
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[1].isdigit():
+                            return int(parts[1])
+        except Exception:
+            return None
+        return None
+
+    def _rss_current_kb() -> int:
+        v = _read_proc_status_kb("VmRSS:")
+        if v is not None:
+            return v
+        try:
+            return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        except Exception:
+            return -1
+
+    def _rss_peak_kb() -> int:
+        # Linux peak RSS high-water mark
+        v = _read_proc_status_kb("VmHWM:")
+        if v is not None:
+            return v
+        try:
+            return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        except Exception:
+            return -1
+
+    def _safe_mtime(path: Optional[Union[str, Path]]) -> Optional[float]:
+        if not path:
+            return None
+        try:
+            return Path(path).stat().st_mtime
+        except Exception:
+            return None
+
     shard = server.shard
 
+    # ---- メイン構造（無ければ空で扱う）----
     nm = getattr(shard, "neighbor_map", {}) or {}
-    graph_entities = 0
-    graph_total_neighbors = 0
-    try:
-        graph_entities = len(nm)
-        for v in nm.values():
-            graph_total_neighbors += len(v)
-    except Exception:
-        pass
-
-    local_entities = 0
-    try:
-        local_entities = len(getattr(shard, "local_entities", set()) or set())
-    except Exception:
-        pass
-
     nts = getattr(server, "node_to_starts", {}) or {}
-    auth_entities = 0
-    auth_total_starts = 0
-    try:
-        auth_entities = len(nts)
-        for s in nts.values():
-            auth_total_starts += len(s)
-    except Exception:
-        pass
+    owner_map = getattr(server, "owner_map", {}) or {}
 
-    owner_map_size = 0
-    try:
-        owner_map_size = len(getattr(server, "owner_map", {}) or {})
-    except Exception:
-        pass
+    auth_cache = getattr(server, "auth_cache", {}) or {}
+    cache_entries = len(auth_cache) if isinstance(auth_cache, dict) else 0
 
-    counters_total_keys = 0
+    # ---- Counters bundle（まとめてサイズ推定）----
+    counters_bundle: Dict[str, Any] = {}
     for name in [
         "access_counter",
         "authorized_counter",
@@ -146,23 +221,102 @@ def summarize_tables(server: Any) -> Dict[str, Any]:
         "transition_counter",
     ]:
         c = getattr(server, name, None)
-        if c is None:
-            continue
-        try:
-            counters_total_keys += len(c)
-        except Exception:
-            pass
+        if c is not None:
+            counters_bundle[name] = c
+
+    # ---- 規模指標（グラフ）----
+    graph_entities = len(nm)
+    graph_total_neighbors = 0
+    try:
+        graph_total_neighbors = sum(len(v) for v in nm.values())
+    except Exception:
+        graph_total_neighbors = 0
+
+    local_entities = len(getattr(shard, "local_entities", set()) or set())
+
+    # ---- 規模指標（認可）----
+    auth_entities = len(nts)
+    auth_total_starts = 0
+    try:
+        auth_total_starts = sum(len(v) for v in nts.values())
+    except Exception:
+        auth_total_starts = 0
+
+    counters_total_keys = 0
+    try:
+        counters_total_keys = sum(
+            len(c) for c in counters_bundle.values() if hasattr(c, "__len__")
+        )
+    except Exception:
+        counters_total_keys = 0
+
+    # ---- bytes推定（比較用）----
+    bytes_est = {
+        "neighbor_map": deep_getsizeof(nm),
+        "node_to_starts": deep_getsizeof(nts),
+        "owner_map": deep_getsizeof(owner_map),
+        "auth_cache": deep_getsizeof(auth_cache),
+        "counters": deep_getsizeof(counters_bundle),
+    }
+    bytes_est_total = int(sum(int(v) for v in bytes_est.values()))
+
+    # ---- グラフの “必ず変わる” 指標（mainで埋める想定。無ければ0/None）----
+    num_edges = int(getattr(server, "graph_num_edges", 0) or 0)
+    num_nodes = int(getattr(server, "graph_num_nodes", 0) or 0)
+
+    normalized: Dict[str, float] = {}
+    if num_edges > 0:
+        normalized["bytes_est_per_edge"] = bytes_est_total / num_edges
+    if num_nodes > 0:
+        normalized["bytes_est_per_node"] = bytes_est_total / num_nodes
+
+    # ---- 入力ファイル情報（別グラフを読んでいるか検証できる）----
+    edges_path = getattr(server, "edges_path", None)
+    nts_path = getattr(server, "node_to_starts_path", None)
+    auth_path = getattr(server, "auth_file_path", None)
 
     return {
         "pid": os.getpid(),
-        "rss_kb": get_process_rss_kb(),
-        "graph_entities": graph_entities,
-        "graph_total_neighbors": graph_total_neighbors,
-        "local_entities": local_entities,
-        "auth_entities": auth_entities,
-        "auth_total_starts": auth_total_starts,
-        "owner_map_size": owner_map_size,
+        # Peak をメイン指標として出す（論文の peak memory に対応）
+        "rss_kb": _rss_peak_kb(),
+        "rss_kb_current": _rss_current_kb(),
+        # グラフ・認可の規模
+        "graph": {
+            "num_nodes": num_nodes,
+            "num_edges": num_edges,
+            "entities_in_neighbor_map": graph_entities,
+            "total_neighbors": graph_total_neighbors,
+            "local_entities": local_entities,
+        },
+        "auth": {
+            "auth_entities": auth_entities,
+            "auth_total_starts": auth_total_starts,
+            "owner_map_size": len(owner_map),
+            "cache_entries": cache_entries,
+        },
         "counters_total_keys": counters_total_keys,
+        # 推定bytes（比較用）
+        "bytes_est": bytes_est,
+        "bytes_est_total": bytes_est_total,
+        "normalized": normalized,
+        # 参照ファイル（ディスク）: path/bytes/mtime
+        "files": {
+            "edges": {
+                "path": edges_path,
+                "bytes": safe_file_size(edges_path),
+                "mtime": _safe_mtime(edges_path),
+            },
+            "node_to_starts": {
+                "path": nts_path,
+                "bytes": safe_file_size(nts_path),
+                "mtime": _safe_mtime(nts_path),
+            },
+            "auth_file": {
+                "path": auth_path,
+                "bytes": safe_file_size(auth_path),
+                "mtime": _safe_mtime(auth_path),
+            },
+        },
     }
 
 
@@ -963,6 +1117,19 @@ class GraphShardServer(ThreadingHTTPServer):
         self.walk_time_total = 0.0
         self.walk_calls = 0
 
+        # ---- 計測用：このサーバが参照している入力ファイル ----
+        self.edges_path: Optional[str] = None
+        self.node_to_starts_path: Optional[str] = None
+        self.auth_file_path: Optional[str] = None
+
+        # ---- 認可キャッシュ（キャッシュ実装がある場合に使う） ----
+        # ないモデルでは空のままでOK（サイズ0として観測できる）
+        self.auth_cache: Dict[str, bool] = {}
+
+        self.graph_num_edges: int = 0
+        self.graph_num_nodes: int = 0
+        self.edges_mtime: Optional[float] = None
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -1041,6 +1208,19 @@ def main() -> None:
 
     edges = load_edge_list(edge_path)
 
+    # ★追加：グラフ基本統計（必ず変化する）
+    unique_nodes = set()
+    for u, v in edges:
+        unique_nodes.add(u)
+        unique_nodes.add(v)
+    print(f"[Server {args.server_id}] EDGE_FILE={edge_path.resolve()}")
+    print(
+        f"[Server {args.server_id}] |E|={len(edges)}  |V|={len(unique_nodes)}  bytes={edge_path.stat().st_size}"
+    )
+    print(
+        f"[Server {args.server_id}] mtime={datetime.fromtimestamp(edge_path.stat().st_mtime)}"
+    )
+
     base_partitioner = ModuloPartitioner(args.server_count)
     partitioner: Any = base_partitioner
 
@@ -1075,6 +1255,7 @@ def main() -> None:
     )
 
     owned_nodes, owned_edges = split_owned_entities(shard.local_entities)
+
     print(
         f"[Server {args.server_id}] OWNED entity counts: nodes={len(owned_nodes)}, edges={len(owned_edges)}, total={len(shard.local_entities)}"
     )
@@ -1088,15 +1269,21 @@ def main() -> None:
         endpoints=args.server_endpoints,
         request_timeout=args.request_timeout,
     )
+    server.edges_path = str(edge_path)
+    server.graph_num_edges = len(edges)
+    server.graph_num_nodes = len(unique_nodes)
+    server.edges_mtime = edge_path.stat().st_mtime
 
     if args.auth_file:
         auth_table = load_entity_auth_table(Path(args.auth_file))
         server.auth_table = filter_auth_table_for_shard(
             auth_table, shard.partitioner, shard.server_id
         )
+        server.auth_file_path = str(Path(args.auth_file))
 
     if args.node_to_starts_file:
         server.node_to_starts = filtered_node_to_starts
+        server.node_to_starts_path = str(nts_path)
 
     if owner_map:
         server.owner_map = owner_map
