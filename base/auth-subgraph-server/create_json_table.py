@@ -10,7 +10,7 @@ python3 base/auth-subgraph-server/create_json_table.py ./dataset/Louvain/graph/k
 
 グループ分けのみ作る場合
 python3 base/auth-subgraph-server/create_json_table.py \
-    dataset/Louvain/graph/karate.gr \
+    dataset/Louvain/graph/test.gr \
     --ng-ratio 0.3 \
     --subgraph-out base/auth-subgraph-server/subgraph_index.json \
     --subgraph-size 1 \
@@ -217,6 +217,9 @@ def main():
     p = argparse.ArgumentParser(
         description="Generate auth_by_start.json from edge list grouped by start node, with NG ratio."
     )
+    print(
+        "create_json_table.py: Generate auth table JSON from edge list with NG ratio."
+    )
     p.add_argument("edges", type=str, help="Path to edge list file (u v per line).")
     p.add_argument(
         "-o",
@@ -224,6 +227,9 @@ def main():
         type=str,
         default="auth_by_start.json",
         help="Output JSON path.",
+    )
+    print(
+        "create_json_table.py: Generate auth table JSON from edge list with NG ratio."
     )
     p.add_argument(
         "--ng-ratio",
@@ -248,6 +254,9 @@ def main():
         default=5,
         help="Maximum number of entities (nodes + edges) per group.",
     )
+    print(
+        "create_json_table.py: Generate auth table JSON from edge list with NG ratio."
+    )
     p.add_argument(
         "--seed",
         type=int,
@@ -261,6 +270,7 @@ def main():
         help="Optional JSON path to write node_to_starts. If omitted, no file is written.",
     )
     args = p.parse_args()
+    print(f"Arguments: {args}")
 
     if not 0.0 <= args.ng_ratio <= 1.0:
         raise SystemExit("ng-ratio must be between 0.0 and 1.0")
@@ -307,7 +317,7 @@ def main():
         safe_graph_label = "".join(
             c if c.isalnum() or c in ("-", "_") else "_" for c in graph_label
         )
-        meta_filename = f"{base_name}_{safe_graph_label}_groups{group_count}_size{args.subgraph_size}.json"
+        meta_filename = f"{base_name}_{safe_graph_label}_size{args.subgraph_size}.json"
         meta_path = subgraph_path.with_name(meta_filename)
         json_text = json.dumps(subgraph_index, indent=2, ensure_ascii=False)
         meta_path.write_text(json_text, encoding="utf-8")

@@ -497,11 +497,25 @@ class PeerWalker:
         if hasattr(self.stats_collector, "auth_calls"):
             self.stats_collector.auth_calls += 1
 
+    # [allow方式]
+    # def _is_locally_allowed(self, start_node: Optional[int], entity: Any) -> bool:
+    #     if start_node is None:
+    #         return False
+    #     allowed_starts = self.node_to_starts.get(entity)
+    #     return bool(allowed_starts and start_node in allowed_starts)
+
+    # 「deny方式」
     def _is_locally_allowed(self, start_node: Optional[int], entity: Any) -> bool:
         if start_node is None:
             return False
-        allowed_starts = self.node_to_starts.get(entity)
-        return bool(allowed_starts and start_node in allowed_starts)
+        # entity_to_denied_starts:
+        #   entity -> Set[start] (NGになっている start)
+        denied_starts = self.entity_to_starts.get(entity)
+        # denied_starts が存在しない or 空 → 誰もNGにしていない → OK
+        if not denied_starts:
+            return True
+        # start_node が NG に含まれていなければ OK
+        return start_node not in denied_starts
 
     def _check_remote_authorization(
         self, target_server: int, start_node: Optional[int], entity: Any
@@ -892,9 +906,20 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         except Exception:
             self.send_error(400, "'start_node' must be an integer")
             return
-
-        allowed_starts = self.server.node_to_starts.get(entity, set())
-        allowed = bool(start_int in allowed_starts)
+        # [allow方式:]
+        # allowed_starts = self.server.node_to_starts.get(entity, set())
+        # allowed = bool(start_int in allowed_starts)
+        # self._write_json(
+        #     {"allowed": allowed, "entity": entity, "server_id": self.server.server_id}
+        # )
+        # [deny方式:]
+        #   entity_to_denied_starts: { entity -> set(denied_start_nodes) }
+        denied_starts = self.server.node_to_starts.get(entity, set())
+        # denied 情報が無い / 空 → 誰もNGにしていない → 許可
+        if not denied_starts:
+            allowed = True
+        else:
+            allowed = start_int not in denied_starts
         self._write_json(
             {"allowed": allowed, "entity": entity, "server_id": self.server.server_id}
         )
