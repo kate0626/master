@@ -1,6 +1,7 @@
 """
 D1 でキャッシュを導入したので、その評価としてヒット率を導入
 キャッシュのヒット率を評価するために、箱ひげ図で評価
+
 """
 
 import re
@@ -13,7 +14,7 @@ import numpy as np
 # =========================
 ROOT_DIRS = {
     # "base": Path("./"),
-    "cache": Path("./"),
+    "cache": Path("./D1:cache/0.3"),
 }
 
 HIT_RATE_PATTERN = re.compile(r"hit_rate:\s*([0-9.]+)")

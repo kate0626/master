@@ -3,20 +3,22 @@ set -euo pipefail
 
 ############################################################
 #  固定コマンド実行用（all.sh と同じ起動/終了フロー）
+
+# データによって0.3にしかないものなどあるので、気をつけること
 ############################################################
 
 TIMEOUT=120
 # GRAPH=test
 
-GRAPH=fb-caltech-connected
+GRAPH=amazon0601
 EDGE_FILE="dataset/Louvain/graph/${GRAPH}.gr"
 REPO_DIR="./"
 LOG_DIR="runs/auth/C1:bunsan/base"
 RW_WAKLS=100
 ALPHA=0.1
-NG_RATE="0.0"
+NG_RATE="0.3"
 # 全ての頂点からではなくて、ランダムな頂点から実行する
-START_NODES_LIST=(1 2 3 4 200)
+START_NODES_LIST=(0 2 3 5 6)
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/${GRAPH}.log"
 : > "${LOG_FILE}"
@@ -79,6 +81,24 @@ cleanup() {
   done
   echo ">>> [CLEANUP] 完了。"
 }
+
+cleanup() {
+  echo ">>> [CLEANUP] Killing all experiment processes..."
+
+  for entry in "${SERVERS[@]}"; do
+    eval "$entry"
+    ssh -o ConnectTimeout=5 "$host" "
+      pkill -f split_remote_server.py || true
+      pkill -f split_controller.py || true
+    " >/dev/null 2>&1 || true
+  done
+
+  # 念のためローカルも
+  pkill -f split_controller.py || true
+
+  echo ">>> [CLEANUP] Done."
+}
+
 trap cleanup EXIT
 
 TARGET_LOG="[Server"
@@ -202,8 +222,8 @@ for start_node in "${START_NODES_LIST[@]}"; do
     --start-node "${start_node}" \
     --walks ${RW_WAKLS} \
     --alpha ${ALPHA} \
-    --seed 42 \
-    --node-to-starts-file "base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts.json"
+    --seed 42 
+    # --node-to-starts-file "base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts.json"
 done
 
 
