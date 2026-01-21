@@ -68,37 +68,60 @@ import matplotlib.pyplot as plt
 #    例：alpha = 0.1, 0.3, 0.5 の3種類
 # =========================================================
 
-ALPHA_VALUES = [0.10, 0.08, 0.06, 0.04, 0.02, 0.01]
-SUBGRAPH_SIZES = [2, 4, 6, 8, 10]
+# 認証ありとサブグラフの大きさによる比較
+files_with_auth = {
+    0.1: "auth/test/exp1_data/result_ng0_3_walks100_alpha0.1.log",
+    0.08: "auth/test/exp1_data/result_ng0_3_walks100_alpha0.08.log",
+    0.06: "auth/test/exp1_data/result_ng0_3_walks100_alpha0.06.log",
+    0.04: "auth/test/exp1_data/result_ng0_3_walks100_alpha0.04.log",
+    0.02: "auth/test/exp1_data/result_ng0_3_walks100_alpha0.02.log",
+    0.01: "auth/test/exp1_data/result_ng0_3_walks100_alpha0.01.log",
+}
 
+files_sub_10 = {
+    0.1: "auth_subgraph/test/10_result_ng0_3_walks100_alpha0.1.log",
+    0.08: "auth_subgraph/test/10_result_ng0_3_walks100_alpha0.08.log",
+    0.06: "auth_subgraph/test/10_result_ng0_3_walks100_alpha0.06.log",
+    0.04: "auth_subgraph/test/10_result_ng0_3_walks100_alpha0.04.log",
+    0.02: "auth_subgraph/test/10_result_ng0_3_walks100_alpha0.02.log",
+    0.01: "auth_subgraph/test/10_result_ng0_3_walks100_alpha0.01.log",
+}
 
-def alpha_label(alpha: float) -> str:
-    """Logファイル名に埋め込む文字列表現（末尾の0を落とす）"""
-    return f"{alpha:.2f}".rstrip("0").rstrip(".")
+files_sub_2 = {
+    0.1: "auth_subgraph/test/2_result_ng0_3_walks100_alpha0.1.log",
+    0.08: "auth_subgraph/test/2_result_ng0_3_walks100_alpha0.08.log",
+    0.06: "auth_subgraph/test/2_result_ng0_3_walks100_alpha0.06.log",
+    0.04: "auth_subgraph/test/2_result_ng0_3_walks100_alpha0.04.log",
+    0.02: "auth_subgraph/test/2_result_ng0_3_walks100_alpha0.02.log",
+    0.01: "auth_subgraph/test/2_result_ng0_3_walks100_alpha0.01.log",
+}
 
+files_sub_4 = {
+    0.1: "auth_subgraph/test/4_result_ng0_3_walks100_alpha0.1.log",
+    0.08: "auth_subgraph/test/4_result_ng0_3_walks100_alpha0.08.log",
+    0.06: "auth_subgraph/test/4_result_ng0_3_walks100_alpha0.06.log",
+    0.04: "auth_subgraph/test/4_result_ng0_3_walks100_alpha0.04.log",
+    0.02: "auth_subgraph/test/4_result_ng0_3_walks100_alpha0.02.log",
+    0.01: "auth_subgraph/test/4_result_ng0_3_walks100_alpha0.01.log",
+}
 
-def build_auth_file_map() -> dict:
-    base = "auth/test/exp1_data"
-    template = "result_ng0_3_walks100_alpha{alpha}.log"
-    return {
-        alpha: f"{base}/{template.format(alpha=alpha_label(alpha))}"
-        for alpha in ALPHA_VALUES
-    }
+files_sub_6 = {
+    0.1: "auth_subgraph/test/6_result_ng0_3_walks100_alpha0.1.log",
+    0.08: "auth_subgraph/test/6_result_ng0_3_walks100_alpha0.08.log",
+    0.06: "auth_subgraph/test/6_result_ng0_3_walks100_alpha0.06.log",
+    0.04: "auth_subgraph/test/6_result_ng0_3_walks100_alpha0.04.log",
+    0.02: "auth_subgraph/test/6_result_ng0_3_walks100_alpha0.02.log",
+    0.01: "auth_subgraph/test/6_result_ng0_3_walks100_alpha0.01.log",
+}
 
-
-def build_subgraph_file_map(size: int) -> dict:
-    base = "auth_subgraph/test"
-    template = "{size}_result_ng0_3_walks100_alpha{alpha}.log"
-    return {
-        alpha: f"{base}/{template.format(size=size, alpha=alpha_label(alpha))}"
-        for alpha in ALPHA_VALUES
-    }
-
-
-# 認証あり
-files_with_auth = build_auth_file_map()
-files_subgraphs = {size: build_subgraph_file_map(size) for size in SUBGRAPH_SIZES}
-
+files_sub_8 = {
+    0.1: "auth_subgraph/test/8_result_ng0_3_walks100_alpha0.1.log",
+    0.08: "auth_subgraph/test/8_result_ng0_3_walks100_alpha0.08.log",
+    0.06: "auth_subgraph/test/8_result_ng0_3_walks100_alpha0.06.log",
+    0.04: "auth_subgraph/test/8_result_ng0_3_walks100_alpha0.04.log",
+    0.02: "auth_subgraph/test/8_result_ng0_3_walks100_alpha0.02.log",
+    0.01: "auth_subgraph/test/8_result_ng0_3_walks100_alpha0.01.log",
+}
 
 # files_no_auth = {
 #     0.1: "auth_subgraph/test/4_result_ng0_3_walks100_alpha0.1.log",
@@ -160,34 +183,12 @@ files_subgraphs = {size: build_subgraph_file_map(size) for size in SUBGRAPH_SIZE
 ## 実行時間の長さを計算
 def extract_remote_durations(path):
     durations = []
-    wall_fallback = []
-    remote_re = re.compile(r"remote_duration:\s*([0-9.]+)")
-    summary_duration_re = re.compile(r"^\s*-\s+duration:\s*([0-9.]+)")
-    controller_duration_re = re.compile(r"\[Controller\].*duration\s+([0-9.]+)")
-    wall_re = re.compile(r"\[Controller\]\s+PPR timing:\s+wall=([0-9.]+)s")
-
     with open(path, "r") as f:
         for line in f:
-            m = remote_re.search(line)
+            m = re.search(r"remote_duration:\s*([0-9.]+)", line)
             if m:
                 durations.append(float(m.group(1)))
-                continue
-
-            m = summary_duration_re.search(line)
-            if m:
-                durations.append(float(m.group(1)))
-                continue
-
-            m = controller_duration_re.search(line)
-            if m:
-                durations.append(float(m.group(1)))
-                continue
-
-            m = wall_re.search(line)
-            if m:
-                wall_fallback.append(float(m.group(1)))
-
-    return durations if durations else wall_fallback
+    return durations
 
 
 ## 歩調の長さを計算
@@ -210,30 +211,57 @@ alphas = sorted(files_with_auth.keys())
 
 ## 平均時間
 avg_with_auth = []
-avg_sub_by_size = {size: [] for size in SUBGRAPH_SIZES}
+avg_sub_2 = []
+avg_sub_4 = []
+avg_sub_6 = []
+avg_sub_8 = []
+avg_sub_10 = []
 
 for alpha in alphas:
-    avg_with_auth.append(np.mean(extract_remote_durations(files_with_auth[alpha])))
-    for size in SUBGRAPH_SIZES:
-        avg_sub_by_size[size].append(
-            np.mean(extract_remote_durations(files_subgraphs[size][alpha]))
-        )
+    d1 = extract_remote_durations(files_with_auth[alpha])
+    d2 = extract_remote_durations(files_sub_2[alpha])
+    d3 = extract_remote_durations(files_sub_4[alpha])
+    d4 = extract_remote_durations(files_sub_6[alpha])
+    d5 = extract_remote_durations(files_sub_8[alpha])
+    d6 = extract_remote_durations(files_sub_10[alpha])
+
+    avg_with_auth.append(np.mean(d1))
+    avg_sub_2.append(np.mean(d2))
+    avg_sub_4.append(np.mean(d3))
+    avg_sub_6.append(np.mean(d4))
+    avg_sub_8.append(np.mean(d5))
+    avg_sub_10.append(np.mean(d6))
 
 
 print("with auth:", avg_with_auth)
-for size in SUBGRAPH_SIZES:
-    print(f"sub{size}:", avg_sub_by_size[size])
+print("sub2:", avg_sub_2)
+print("sub4", avg_sub_4)
+print("sub6", avg_sub_6)
+print("sub8", avg_sub_8)
+print("sub10", avg_sub_10)
 
 
 ## 平均歩調
 avglen_with_auth = []
-avglen_sub_by_size = {size: [] for size in SUBGRAPH_SIZES}
+avglen_sub2 = []
+avglen_sub4 = []
+avglen_sub6 = []
+avglen_sub8 = []
+avglen_sub10 = []
 for alpha in alphas:
-    avglen_with_auth.append(np.mean(extract_avg_lengths(files_with_auth[alpha])))
-    for size in SUBGRAPH_SIZES:
-        avglen_sub_by_size[size].append(
-            np.mean(extract_avg_lengths(files_subgraphs[size][alpha]))
-        )
+    l1 = extract_avg_lengths(files_with_auth[alpha])
+    l2 = extract_avg_lengths(files_sub_2[alpha])
+    l3 = extract_avg_lengths(files_sub_4[alpha])
+    l4 = extract_avg_lengths(files_sub_6[alpha])
+    l5 = extract_avg_lengths(files_sub_8[alpha])
+    l6 = extract_avg_lengths(files_sub_10[alpha])
+
+    avglen_with_auth.append(np.mean(l1))
+    avglen_sub2.append(np.mean(l2))
+    avglen_sub4.append(np.mean(l3))
+    avglen_sub6.append(np.mean(l4))
+    avglen_sub8.append(np.mean(l5))
+    avglen_sub10.append(np.mean(l6))
 # avglen_no_auth = []
 # avglen_with_auth_vis = []
 
@@ -247,8 +275,11 @@ for alpha in alphas:
 #     avglen_with_auth_vis.append(np.mean(l3))
 
 print("avg length with auth:", avglen_with_auth)
-for size in SUBGRAPH_SIZES:
-    print(f"avg length sub{size}:", avglen_sub_by_size[size])
+print("avg length sub2:", avglen_sub2)
+print("avg length sub4:", avglen_sub4)
+print("avg length sub6:", avglen_sub6)
+print("avg length sub8:", avglen_sub8)
+print("avg length sub10:", avglen_sub10)
 
 # print("avg length no auth:", avglen_no_auth)
 # print("avg visi", avglen_with_auth_vis)
@@ -287,13 +318,11 @@ for size in SUBGRAPH_SIZES:
 plt.figure(figsize=(8, 5))
 
 plt.plot(alphas, avglen_with_auth, marker="o", label="with auth")
-for size in SUBGRAPH_SIZES:
-    plt.plot(
-        alphas,
-        avglen_sub_by_size[size],
-        marker="o",
-        label=f"subgraph {size}",
-    )
+plt.plot(alphas, avglen_sub2, marker="o", label="subgraph 2")
+plt.plot(alphas, avglen_sub4, marker="o", label="subgraph 4")
+plt.plot(alphas, avglen_sub6, marker="o", label="subgraph 6")
+plt.plot(alphas, avglen_sub8, marker="o", label="subgraph 8")
+plt.plot(alphas, avglen_sub10, marker="o", label="subgraph 10")
 # plt.plot(alphas, avglen_no_auth, marker="o", label="visi auth")
 # plt.plot(alphas, avglen_with_auth_vis, marker="o", label="no auth")
 

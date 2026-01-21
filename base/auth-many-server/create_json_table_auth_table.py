@@ -12,16 +12,25 @@ NG集合(deny)を生成しつつ、直接サーバごとの entity_to_denied_sta
   out_dir/entity_to_denied_starts_server{sid}.json
     entity(node or edge_id) -> [このentityをNGにしているstart一覧]
 
+★追加:
+- starts を任意指定できる:
+    --starts "1-10"      # 1..10 を starts にする
+    --starts "1,3,7"     # 指定ノードのみ
+    --starts "all"       # グラフ中の全ノード（デフォルト）
+    
+背景：指定ノードを決めないと、爆発してしまう
+
+
 Usage:
-python3 base/auth-many-server/create_json_table_auth_table.py \
-  --edges ./dataset/Louvain/graph/karate.gr \
+nohup python3 base/auth-many-server/create_json_table_auth_table.py \
+  --edges ./dataset/Louvain/graph/vldb.gr \
   --ng-ratio 0.3 \
   --seed 0 \
   --server-count 2 \
   --partitioner-type node-edge-fixed \
-  --out-dir base/auth-many-server/splits/karate/0.3
+  --starts "1-10" \
+  --out-dir base/auth-many-server/data/splits/vldb/0.3 > run.log 2>&1 &
 """
-
 
 from __future__ import annotations
 
@@ -89,7 +98,7 @@ def to_serializable(table: Dict[NodeOrEdgeId, Set[int]]) -> Dict[str, List[int]]
 
 
 # -----------------------------
-# partitioners (必要なものだけ)
+# partitioners
 # -----------------------------
 class ModuloPartitioner:
     def __init__(self, server_count: int) -> None:
@@ -133,6 +142,47 @@ class NodeEdgeFixedPartitioner:
 
 
 # -----------------------------
+# starts parsing
+# -----------------------------
+def parse_starts_spec(spec: str, nodes_list: List[int]) -> List[int]:
+    """
+    spec:
+      - "all" or ""  : all nodes in graph (sorted)
+      - "1-10"       : inclusive range
+      - "1,3,7"      : explicit list
+      - mixed is allowed: "1-3,10,20-22"
+    """
+    spec = (spec or "").strip().lower()
+    if spec in ("", "all"):
+        return list(nodes_list)
+
+    nodes_set = set(nodes_list)
+    out: Set[int] = set()
+
+    parts = [p.strip() for p in spec.split(",") if p.strip()]
+    for p in parts:
+        if "-" in p:
+            a_str, b_str = p.split("-", 1)
+            a = int(a_str.strip())
+            b = int(b_str.strip())
+            lo, hi = (a, b) if a <= b else (b, a)
+            for x in range(lo, hi + 1):
+                if x in nodes_set:
+                    out.add(x)
+        else:
+            x = int(p)
+            if x in nodes_set:
+                out.add(x)
+
+    starts_list = sorted(out)
+    if not starts_list:
+        raise SystemExit(
+            f"--starts '{spec}' produced empty starts (none exist in graph)."
+        )
+    return starts_list
+
+
+# -----------------------------
 # constraint A
 # -----------------------------
 def enforce_global_constraint_A(
@@ -161,8 +211,8 @@ def enforce_global_constraint_A(
                 denied.discard(keep_allowed)
                 fixed += 1
 
-                # もし空集合になったら、この entity は「誰もNGにしていない」なので、
-                # 省略したいなら削除してもOK。ここでは削除してファイルを小さくする。
+                # もし空集合になったら、この entity は「誰もNGにしていない」
+                # → ファイルを小さくするため削除
                 if not denied:
                     del tbl[entity]
 
@@ -192,6 +242,12 @@ def parse_args() -> argparse.Namespace:
         help="How to assign entity owners",
     )
     p.add_argument("--out-dir", required=True, type=str, help="Output directory")
+    p.add_argument(
+        "--starts",
+        type=str,
+        default="all",
+        help='Start nodes spec: "all" (default), "1-10", "1,3,7", or mixed "1-3,10,20-22".',
+    )
     return p.parse_args()
 
 
@@ -229,8 +285,11 @@ def main() -> None:
     m = len(all_edges_list)
     node_index: Dict[int, int] = {node: i for i, node in enumerate(nodes_list)}
 
+    # ★ starts を "1-10" などで限定
+    starts_list = parse_starts_spec(args.starts, nodes_list)
+
     # start集合（制約Aで使う）
-    all_starts: Set[int] = set(nodes_list)
+    all_starts: Set[int] = set(starts_list)
 
     # NG個数（サンプル方式）
     k_node = int(round(args.ng_ratio * max(0, n - 1)))
@@ -244,7 +303,7 @@ def main() -> None:
     ]
 
     # startごとにNGを作り、NGになったentityを owner server に振り分けて追加
-    for start in nodes_list:
+    for start in starts_list:
         si = node_index[start]
 
         # ノードNG（自分以外から k_node 個）
@@ -271,7 +330,8 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for sid in range(args.server_count):
-        out_path = out_dir / f"entity_to_denied_starts_server{sid}.json"
+        # out_path = out_dir / f"entity_to_denied_starts_server{sid}.json"
+        out_path = out_dir / f"node_to_starts_server{sid}.json"
         out_path.write_text(
             json.dumps(to_serializable(buckets[sid]), indent=2, ensure_ascii=False),
             encoding="utf-8",
@@ -280,7 +340,8 @@ def main() -> None:
 
     print(
         f"[DONE] N={n}, M={m}, ng_ratio={args.ng_ratio}, "
-        f"k_node={k_node}, k_edge={k_edge}, constraintA_fixed_entities={fixed}"
+        f"k_node={k_node}, k_edge={k_edge}, starts={len(starts_list)}, "
+        f"constraintA_fixed_entities={fixed}"
     )
 
 

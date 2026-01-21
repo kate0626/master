@@ -12,6 +12,32 @@ from urllib import request as urllib_request
 NodeOrEdgeId = Union[int, str]
 
 
+"""
+    一般の時の実行方法
+        for start_node in "${START_NODES_LIST[@]}"; do
+            echo "=== [START_NODE] ${start_node} ==="
+            python3 base/auth-many-server/split_controller.py \
+                --servers 2 \
+                --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
+                --start-node "${start_node}" \
+                --walks ${RW_WAKLS} \
+                --alpha ${ALPHA} \
+                --seed 42 \
+                --node-to-starts-file "base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/entity_to_denied_starts_server0.json"
+            done
+    
+    Denyの時の実行方法
+    python3 base/auth-many-server/split_controller.py \
+      --servers 2 \
+      --alpha 0.1 \
+      --start-node 1 \
+      --walks 10 \
+      --seed 42 \
+      --server-endpoints 10.58.60.6:3000 10.58.60.11:3000
+      --force-start-server 0
+"""
+
+
 def parse_entity_id(raw) -> NodeOrEdgeId:
     if isinstance(raw, int):
         return raw
@@ -194,7 +220,6 @@ def pick_start_server(
 
 def main() -> None:
     args = parse_arguments()
-
     if args.servers <= 0:
         raise ValueError("--servers must be positive")
     if len(args.server_endpoints) != args.servers:
@@ -233,6 +258,35 @@ def main() -> None:
     print(f"Avg length: {avg_len:.3f}, total steps: {total_steps}")
     if duration is not None:
         print(f"[Controller] duration {float(duration):.6f}s")
+
+    # RWerごとの訪問回数（差分）と累計を作成
+    per_walk_access = []
+    cumulative_access = defaultdict(int)
+    cumulative_total_visits = 0
+    cumulative_series = []
+    for idx, w in enumerate(walks, start=1):
+        per_walk = defaultdict(int)
+        for ent in w.get("path", []):
+            per_walk[str(ent)] += 1
+        per_walk_total = sum(per_walk.values())
+        per_walk_access.append(
+            {
+                "walk_index": idx,
+                "access": dict(per_walk),
+                "total_visits": per_walk_total,
+                "unique_entities": len(per_walk),
+            }
+        )
+        for ent, count in per_walk.items():
+            cumulative_access[ent] += count
+        cumulative_total_visits += per_walk_total
+        cumulative_series.append(
+            {
+                "walk_index": idx,
+                "total_visits": cumulative_total_visits,
+                "unique_entities": len(cumulative_access),
+            }
+        )
 
     # サーバー訪問回数のカウント
     server_visits = defaultdict(int)
@@ -315,7 +369,9 @@ def main() -> None:
         seed_str = "none" if args.seed is None else str(args.seed)
         prefix = f"start={int(args.start_node)}_walks={int(args.walks)}_alpha={float(args.alpha)}_seed={seed_str}"
 
-    output_filename = f"{prefix}_global_transition.json"
+    # ここを実行した時のフォルダと同じにする
+    # output_filename = f"/{prefix}_global_transition.json"
+    output_filename = out_dir / f"{prefix}_global_transition.json"
 
     out = {
         "access": dict(global_access),
@@ -363,6 +419,23 @@ def main() -> None:
     mem_path = out_dir / f"{prefix}_memory_summary.json"
     mem_path.write_text(json.dumps(mem_summary, indent=2), encoding="utf-8")
     print(f"[Controller] Saved memory summary to {mem_path}")
+
+    per_walk_path = out_dir / f"{prefix}_per_walk_access.json"
+    per_walk_payload = {
+        "per_walk_access": per_walk_access,
+        "cumulative_series": cumulative_series,
+        "controller": {
+            "start_node": int(args.start_node),
+            "start_server": int(start_server),
+            "servers": int(args.servers),
+            "alpha": float(args.alpha),
+            "walks": int(args.walks),
+            "seed": args.seed,
+            "server_endpoints": list(args.server_endpoints),
+        },
+    }
+    per_walk_path.write_text(json.dumps(per_walk_payload, indent=2), encoding="utf-8")
+    print(f"[Controller] Saved per-walk access stats to {per_walk_path}")
 
 
 if __name__ == "__main__":

@@ -10,6 +10,18 @@ from typing import Any, Dict, Optional, Set, Union
 from urllib import request as urllib_request
 
 NodeOrEdgeId = Union[int, str]
+"""
+     echo "=== [START_NODE] ${start_node} ==="
+  python3 base/auth-cache/split_controller.py \
+    --servers 2 \
+    --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
+    --start-node 0 \
+    --walks 10 \
+    --alpha 0.1 \
+    --seed 42 
+    --node-to-starts-file "base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts.json"
+    コマンドの一番下の部分が変わった瞬間エラーになる
+"""
 
 
 def parse_entity_id(raw) -> NodeOrEdgeId:
@@ -162,6 +174,35 @@ def fetch_access_stats(endpoint: str, timeout: float) -> Optional[dict]:
         return None
 
 
+# def pick_start_server(
+#     start_node: int,
+#     servers: int,
+#     endpoints: list[str],
+#     node_to_starts_file: Optional[str],
+#     force_start_server: Optional[int],
+# ) -> int:
+#     if force_start_server is not None:
+#         if force_start_server < 0 or force_start_server >= servers:
+#             raise ValueError(
+#                 f"--force-start-server must be in [0, {servers-1}] but got {force_start_server}"
+#             )
+#         return force_start_server
+
+#     if node_to_starts_file:
+#         base = Path(node_to_starts_file)
+#         if base.exists() or base.parent.exists():
+#             owner_map = build_owner_map_from_sibling_node_to_starts_files(base)
+#             sid = owner_map.get(str(start_node))
+#             if sid is not None:
+#                 if sid < 0 or sid >= servers:
+#                     raise ValueError(
+#                         f"owner_map says start_node {start_node} owned by server {sid}, but servers={servers}"
+#                     )
+#                 return sid
+
+
+#     # フォールバック：0に投げるのが安全
+#     return 0
 def pick_start_server(
     start_node: int,
     servers: int,
@@ -169,26 +210,14 @@ def pick_start_server(
     node_to_starts_file: Optional[str],
     force_start_server: Optional[int],
 ) -> int:
+    # 強制指定があればそれを優先（デバッグ用）
     if force_start_server is not None:
         if force_start_server < 0 or force_start_server >= servers:
             raise ValueError(
                 f"--force-start-server must be in [0, {servers-1}] but got {force_start_server}"
             )
         return force_start_server
-
-    if node_to_starts_file:
-        base = Path(node_to_starts_file)
-        if base.exists() or base.parent.exists():
-            owner_map = build_owner_map_from_sibling_node_to_starts_files(base)
-            sid = owner_map.get(str(start_node))
-            if sid is not None:
-                if sid < 0 or sid >= servers:
-                    raise ValueError(
-                        f"owner_map says start_node {start_node} owned by server {sid}, but servers={servers}"
-                    )
-                return sid
-
-    # フォールバック：0に投げるのが安全
+    # それ以外は常に server0
     return 0
 
 

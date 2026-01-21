@@ -2,21 +2,23 @@
 set -euo pipefail
 
 ############################################################
-#  固定コマンド実行用（all.sh と同じ起動/終了フロー）
+#  Remote server が "READY" になってから controller を実行する版
 ############################################################
 
-TIMEOUT=30
-# GRAPH=karate 
+# ====== 設定 ======
+TIMEOUT=300               # 起動待ち全体の上限（長め）
+HEALTH_RETRY=60          # /health の最大試行回数（1回=0.5sなら30秒）
+HEALTH_STABLE=2          # 連続OK回数（2回連続OKでREADY扱い）
+HEALTH_INTERVAL=1      # 何秒おきに叩くか
 
-GRAPH=fb-caltech-connected
+GRAPH=karate
 EDGE_FILE="dataset/Louvain/graph/${GRAPH}.gr"
 REPO_DIR="./"
-LOG_DIR="runs/auth/D1:cache/"
-RW_WAKLS=100
+LOG_DIR="runs/auth/D1:cache/0.3/"
+RW_WALKS=100
 ALPHA=0.1
-NG_RATE="0.0"
-# 全ての頂点からではなくて、ランダムな頂点から実行する
-START_NODES_LIST=(1 2 3 4 5)
+NG_RATE="0.3"
+START_NODES_LIST=(0 1 2 3 4)
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/${GRAPH}.log"
 : > "${LOG_FILE}"
@@ -24,13 +26,18 @@ MEM_LOG_FILE="${LOG_DIR}/${GRAPH}.memory.log"
 : > "${MEM_LOG_FILE}"
 
 exec > >(tee -a "${LOG_FILE}") 2>&1
-# exec > "${LOG_FILE}" 2>&1a
 
-# エッジノード別々のサーバのものを考えるにはSplitをつける
+# ====== サーバ定義 ======
 SERVERS=(
   "host=ab06 id=0 ip=10.58.60.6 port=3000 nts=base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts_server0.json"
   "host=ab11 id=1 ip=10.58.60.11 port=3000 nts=base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts_server1.json"
 )
+
+# NG deny を使う時
+# SERVERS=(
+#   "host=ab06 id=0 ip=10.58.60.6 port=3000 nts=base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/entity_to_denied_starts_server0.json"
+#   "host=ab11 id=1 ip=10.58.60.11 port=3000 nts=base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/entity_to_denied_starts_server1.json"
+# )
 
 SERVER_COUNT=${#SERVERS[@]}
 SERVER_ENDPOINTS=()
@@ -39,14 +46,15 @@ for entry in "${SERVERS[@]}"; do
   SERVER_ENDPOINTS+=("${ip}:${port}")
 done
 SERVER_ENDPOINTS_STR="${SERVER_ENDPOINTS[*]}"
-TARGET_LOG="^\\[Server"
 
-REMOTE_CMD_BASE="python3 base/auth-cache/split_remote_server.py \\
-  --server-count ${SERVER_COUNT} \\
-  --edges ${EDGE_FILE} \\
-  --server-endpoints ${SERVER_ENDPOINTS_STR} \\
-  --owned-hints-only"
+REMOTE_CMD_BASE="python3 base/auth-cache/split_remote_server.py \
+  --server-count ${SERVER_COUNT} \
+  --edges ${EDGE_FILE} \
+  --server-endpoints ${SERVER_ENDPOINTS_STR} \
+  --owned-hints-only \
+  --request-timeout 120"
 
+# ====== メモリスナップショット ======
 snapshot_memory() {
   local label="$1"
   {
@@ -69,142 +77,137 @@ else:
   } >> "${MEM_LOG_FILE}" 2>&1
 }
 
-
-
+# ====== 後始末 ======
 cleanup() {
   echo ">>> [CLEANUP] 全サーバ停止中..."
   for entry in "${SERVERS[@]}"; do
     eval "$entry"
-    ssh -o ConnectTimeout=5 "$host" "pkill -f base/auth-cache/split_remote_server.py || true" >/dev/null 2>&1 || true
+    ssh -o ConnectTimeout=300 "$host" "pkill -f base/auth-cache/split_remote_server.py || true" >/dev/null 2>&1 || true
   done
   echo ">>> [CLEANUP] 完了。"
 }
 trap cleanup EXIT
 
-TARGET_LOG="[Server"
-
+# ====== リモート起動 ======
 start_remote_server() {
   local host=$1 id=$2 ip=$3 port=$4 nts=$5
   echo "=== [${host}] サーバ起動開始 (ID=${id}) ==="
 
+  # リモートで起動して PID を必ず表示する
   ssh "$host" bash <<EOF
 set -euo pipefail
 cd ${REPO_DIR}
 
 : > split_remote_server.log
 
-${REMOTE_CMD_BASE} \
+# バックグラウンド起動
+(${REMOTE_CMD_BASE} \
   --server-id ${id} \
   --host ${ip} \
   --port ${port} \
   --node-to-starts-file ${nts} \
-  > split_remote_server.log 2>&1 &
+  >> split_remote_server.log 2>&1) &
 
 PID=\$!
+echo "[REMOTE] started pid=\${PID} (log=split_remote_server.log)"
 
-# 起動待ち（固定文字列 grep）
-timeout ${TIMEOUT}s bash <<'INNER'
-set -e
-while true; do
-  if grep -F -m1 "${TARGET_LOG}" split_remote_server.log >/dev/null 2>&1; then
-    exit 0
-  fi
-  sleep 0.2
-done
-INNER
+# 初期待機（少し長め）
+echo "[WAIT] ${ip}:${port}: initial grace 5s..."
+sleep 5
 
-echo "[INFO] ${host}: 起動OK"
 EOF
-
-  if [[ $? -ne 0 ]]; then
-    echo "[WARN] ${host}: タイムアウト (${TIMEOUT}s)"
-  fi
 }
 
+# ====== ローカルから /health 待ち ======
+wait_health() {
+  local ep="$1"
+  local ok=0
+  local i=0
 
+  while (( i < HEALTH_RETRY )); do
+    # /health が取れたらOK（レスポンス内容までは見ない。必要なら jq してもOK）
+    if curl -fs "http://${ep}/health" >/dev/null 2>&1; then
+      ok=$((ok+1))
+      echo "[WAIT] ${ep}: health ok (${ok}/${HEALTH_STABLE})"
+      if (( ok >= HEALTH_STABLE )); then
+        echo "[READY] ${ep}"
+        return 0
+      fi
+    else
+      ok=0
+      # echo "[WAIT] ${ep}: health not ready yet..."
+    fi
+    sleep "${HEALTH_INTERVAL}"
+    i=$((i+1))
+  done
+
+  echo "[ERROR] ${ep}: health check timeout"
+  return 1
+}
+
+# ====== 起動（並列） ======
+pids=()
 for entry in "${SERVERS[@]}"; do
   eval "$entry"
   start_remote_server "$host" "$id" "$ip" "$port" "$nts" &
+  pids+=($!)
 done
-wait
 
-# node_to_starts からスタートノードを全取得（サーバ起動と同じ splits を参照）
-# START_NODES_LIST=(${(s: :)$(
-#   python3 - \
-#     "base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts_server0.json" \
-#     "base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts_server1.json" \
-#   <<'PY'
-# import json, sys
-# starts=set()
-# for path in sys.argv[1:]:
-#     try:
-#         data=json.load(open(path))
-#     except Exception as e:
-#         print(f"[WARN] failed to load {path}: {e}", file=sys.stderr)
-#         continue
-#     for vals in data.values():
-#         if not isinstance(vals, list):
-#             continue
-#         for v in vals:
-#             try:
-#                 starts.add(int(v))
-#             except Exception:
-#                 pass
-# print(" ".join(str(x) for x in sorted(starts)))
-# PY
-# )})
+# 起動コマンド自体の完了待ち
+for pid in "${pids[@]}"; do
+  wait "$pid"
+done
 
+# ====== /health が安定するまで待つ（逐次でも並列でもOK。まず逐次で堅牢に） ======
+for ep in "${SERVER_ENDPOINTS[@]}"; do
+  wait_health "$ep"
+done
+
+# リモートログ末尾を表示（目視確認用）
+for entry in "${SERVERS[@]}"; do
+  eval "$entry"
+  echo "[INFO] ${host}: 起動ログ（末尾20行）"
+  ssh "$host" "cd ${REPO_DIR} && tail -n 20 split_remote_server.log || true"
+done
+
+echo "[INFO] 全サーバ起動確認OK。controller を開始します。"
+
+# ====== controller 実行 ======
 for start_node in "${START_NODES_LIST[@]}"; do
   echo "=== [START_NODE] ${start_node} ==="
   python3 base/auth-cache/split_controller.py \
     --servers 2 \
     --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
     --start-node "${start_node}" \
-    --walks ${RW_WAKLS} \
+    --walks ${RW_WALKS} \
     --alpha ${ALPHA} \
     --seed 42 \
-    --node-to-starts-file "base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts.json"
+    --request-timeout 120
 done
 
+echo "[DONE]"
 
-############################################################
-# Controller duration の合計（ログから集計）
-############################################################
-
+# ====== 集計（ログから） ======
 controller_total=$(
   awk '
-    /Total walk time \(sum over all servers\):/ {
-      sum += $(NF-1)
-    }
-    END {
-      printf "%.6f", sum
-    }
+    /Total walk time \(sum over all servers\):/ { sum += $(NF-1) }
+    END { printf "%.6f", sum }
   ' "${LOG_FILE}"
 )
-
 echo "[TOTAL] controller_duration_sum=${controller_total}s"
-
-############################################################
-# Authorization time の合計（ログから集計）
-############################################################
 
 auth_total=$(
   awk '
-    /Total authorization time \(sum over all servers\):/ {
-      sum += $(NF-1)
-    }
-    END {
-      printf "%.6f", sum
-    }
+    /Total authorization time \(sum over all servers\):/ { sum += $(NF-1) }
+    END { printf "%.6f", sum }
   ' "${LOG_FILE}"
 )
-
 echo "[TOTAL] authorization_time_sum=${auth_total}s"
 
 snapshot_memory "1/3: after totals (immediate)"
-sleep 2
-snapshot_memory "2/3: after totals (+2s)"
-sleep 2
-snapshot_memory "3/3: after totals (+4s)"
+sleep 3
+snapshot_memory "2/3: after totals (+3s)"
+sleep 3
+snapshot_memory "3/3: after totals (+6s)"
 
 echo "[MEMORY] saved: ${MEM_LOG_FILE}"

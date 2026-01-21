@@ -25,6 +25,37 @@ NodeOrEdgeId = Union[int, str]
 
 # ---------------------------------------------------------------------------
 # Utilities
+"""
+python3 base/auth-cache/split_remote_server.py \
+  --server-id 0 \
+  --server-count 2 \
+  --edges dataset/Louvain/graph/karate.gr \
+  --host 10.58.60.6 \
+  --port 3000 \
+  --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
+  --node-to-starts-file base/auth-many-server/data/splits/karate/0.3/node_to_starts_server0.json \
+  --owned-hints-only
+
+python3 base/auth-cache/split_remote_server.py \
+  --server-id 1 \
+  --server-count 2 \
+  --edges dataset/Louvain/graph/amazon0601.gr \
+  --host 10.58.60.11 \
+  --port 3000 \
+  --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
+  --node-to-starts-file base/auth-many-server/data/splits/amazon0601/0.3/node_to_starts_server1.json \
+  --owned-hints-only
+  
+  python3 base/auth-cache/split_controller.py \
+    --servers 2 \
+    --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
+    --start-node 0 \
+    --walks 10 \
+    --alpha 0.1 \
+    --seed 42 
+"""
+
+
 # ---------------------------------------------------------------------------
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
@@ -603,7 +634,7 @@ class PeerWalker:
 
         # entity_to_denied_starts:
         #   entity -> Set[start] (NGになっている start)
-        denied_starts = self.entity_to_starts.get(entity)
+        denied_starts = self.node_to_starts.get(entity)
 
         # denied_starts が存在しない or 空 → 誰もNGにしていない → OK
         if not denied_starts:
@@ -631,6 +662,7 @@ class PeerWalker:
         except Exception:
             return False
 
+    # キャッシュなしの時のコピー
     # def _authorize_candidate(
     #     self, start_node: Optional[int], candidate: Dict[str, Any]
     # ) -> bool:
@@ -651,7 +683,8 @@ class PeerWalker:
     #         allowed = self._check_remote_authorization(owner_sid, start_node, target)
     #     self._record_auth_cost(time.perf_counter() - t0)
     #     return allowed
-    # ここを確認
+
+    # ここを確認　キャッシュありの時
     def _authorize_candidate(
         self, start_node: Optional[int], candidate: Dict[str, Any]
     ) -> bool:
@@ -673,15 +706,15 @@ class PeerWalker:
         # ★追加：サーバ常駐キャッシュ参照
         ekey = cache_entity_key(target)
         ckey = (int(start_node), ekey)
-        print(ekey, ckey)
+        # print(ekey, ckey)
 
         if self.server is not None and ckey in self.server.authz_cache:
-            print("キャッシュありの時")
+            # print("キャッシュありの時")
             self.server.auth_cache_hit += 1
             return bool(self.server.authz_cache[ckey])
 
         if self.server is not None:
-            print("キャッシュなしの時")
+            # print("キャッシュなしの時")
             self.server.auth_cache_miss += 1
 
         # 認可判定（元と同じ）

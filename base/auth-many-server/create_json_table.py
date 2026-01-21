@@ -305,7 +305,7 @@ def main() -> None:
         out_path = None
 
     # node_to_starts.json の出力（常に出す）
-    node_to_starts_path = out_dir / "node_to_starts.json"
+    node_to_starts_path = out_dir / f"node_to_starts_{args.ng_ratio}.json"
     node_to_starts_path.write_text(
         json.dumps(node_to_starts, indent=2, ensure_ascii=False),
         encoding="utf-8",

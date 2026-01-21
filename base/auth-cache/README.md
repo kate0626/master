@@ -3,5 +3,8 @@
 - エッジ→ノード、その逆に関しても遷移先が決まったら、確認して、その応答をして、初めて遷移するというモデルを導入
 
 
-- not useに関して
-現状で使用しているのは、認可なしbase・キャッシュなし認可ありauth-many-server/split ・ありauth-cache
+- 重要　not useに関して
+現状で使用しているのは、以下のみ
+認可なしbase
+キャッシュなし認可ありauth-many-server/split 
+ありauth-cache

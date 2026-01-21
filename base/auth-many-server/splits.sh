@@ -2,21 +2,29 @@
 set -euo pipefail
 
 ############################################################
-#  固定コマンド実行用（all.sh と同じ起動/終了フロー）
+# Remote servers 起動 → 起動確認(十分待機) → Controller 実行
+
+# karate:01234
+# amazon0601: 02356
+# vldb:0 1 2 10 11
 ############################################################
 
-TIMEOUT=30
-GRAPH=fb-caltech-connected
+# ---- 待機パラメータ ----
+TIMEOUT=90          # 最大待機（秒）
+INITIAL_GRACE=5     # 起動直後の猶予（秒）
+HEALTH_OK_STREAK=2  # /health 連続成功回数
+HEALTH_INTERVAL=0.5
 
-# GRAPH=fb-caltech-connected
+GRAPH="fb-caltech-connected"
 EDGE_FILE="dataset/Louvain/graph/${GRAPH}.gr"
 REPO_DIR="./"
-LOG_DIR="runs/auth/C1:bunsan/split"
-RW_WAKLS=100
+
+LOG_DIR="runs/auth/D2/1-approach/0.3/"
+RW_WALKS=100
 ALPHA=0.1
-NG_RATE="0.0"
-# 全ての頂点からではなくて、ランダムな頂点から実行する
-START_NODES_LIST=(1 2 3 4 5)
+NG_RATE="0.3"
+START_NODES_LIST=(1 2 3 40)
+
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/${GRAPH}.log"
 : > "${LOG_FILE}"
@@ -24,9 +32,10 @@ MEM_LOG_FILE="${LOG_DIR}/${GRAPH}.memory.log"
 : > "${MEM_LOG_FILE}"
 
 exec > >(tee -a "${LOG_FILE}") 2>&1
-# exec > "${LOG_FILE}" 2>&1a
 
-# エッジノード別々のサーバのものを考えるにはSplitをつける
+############################################################
+# Server definitions
+############################################################
 SERVERS=(
   "host=ab06 id=0 ip=10.58.60.6 port=3000 nts=base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts_server0.json"
   "host=ab11 id=1 ip=10.58.60.11 port=3000 nts=base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts_server1.json"
@@ -39,58 +48,67 @@ for entry in "${SERVERS[@]}"; do
   SERVER_ENDPOINTS+=("${ip}:${port}")
 done
 SERVER_ENDPOINTS_STR="${SERVER_ENDPOINTS[*]}"
-TARGET_LOG="^\\[Server"
 
-REMOTE_CMD_BASE="python3 base/auth-many-server/split_remote_server.py \\
-  --server-count ${SERVER_COUNT} \\
-  --edges ${EDGE_FILE} \\
-  --server-endpoints ${SERVER_ENDPOINTS_STR} \\
+REMOTE_CMD_BASE="python3 base/auth-many-server/split_remote_server.py \
+  --server-count ${SERVER_COUNT} \
+  --edges ${EDGE_FILE} \
+  --server-endpoints ${SERVER_ENDPOINTS_STR} \
   --owned-hints-only"
 
-snapshot_memory() {
-  local label="$1"
-  {
-    echo "============================================================"
-    echo "=== [MEMORY SNAPSHOT] ${label}  $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "============================================================"
-    for ep in "${SERVER_ENDPOINTS[@]}"; do
-      echo "--- endpoint=${ep} ---"
-      curl -s "http://${ep}/access_stats" | python3 -c '
-import json,sys
-d=json.load(sys.stdin)
-m=d.get("memory")
-if m is None:
-    print({"warn":"no memory field in /access_stats", "keys": list(d.keys())})
-else:
-    print(json.dumps(m, ensure_ascii=False, indent=2))
-'
-      echo
-    done
-  } >> "${MEM_LOG_FILE}" 2>&1
-}
-
-
-
+############################################################
+# Helpers
+############################################################
 cleanup() {
   echo ">>> [CLEANUP] 全サーバ停止中..."
   for entry in "${SERVERS[@]}"; do
     eval "$entry"
-    ssh -o ConnectTimeout=5 "$host" "pkill -f base/auth-many-server/split_remote_server.py || true" >/dev/null 2>&1 || true
+    ssh -o ConnectTimeout=5 "$host" \
+      "pkill -f base/auth-many-server/split_remote_server.py || true" \
+      >/dev/null 2>&1 || true
   done
   echo ">>> [CLEANUP] 完了。"
 }
 trap cleanup EXIT
 
-TARGET_LOG="[Server"
+wait_server_ready() {
+  local ep="$1"
+  local timeout_s="$2"
+  local t0=$(date +%s)
+  local ok_streak=0
+
+  echo "[WAIT] ${ep}: initial grace ${INITIAL_GRACE}s..."
+  sleep "${INITIAL_GRACE}"
+
+  while true; do
+    if curl -fsS "http://${ep}/health" >/dev/null 2>&1; then
+      ok_streak=$((ok_streak + 1))
+      echo "[WAIT] ${ep}: health ok (${ok_streak}/${HEALTH_OK_STREAK})"
+      if (( ok_streak >= HEALTH_OK_STREAK )); then
+        echo "[READY] ${ep}"
+        return 0
+      fi
+    else
+      ok_streak=0
+    fi
+
+    local now=$(date +%s)
+    if (( now - t0 >= timeout_s )); then
+      echo "[ERROR] ${ep}: NOT READY (timeout ${timeout_s}s)"
+      return 1
+    fi
+    sleep "${HEALTH_INTERVAL}"
+  done
+}
 
 start_remote_server() {
   local host=$1 id=$2 ip=$3 port=$4 nts=$5
+  local ep="${ip}:${port}"
+
   echo "=== [${host}] サーバ起動開始 (ID=${id}) ==="
 
   ssh "$host" bash <<EOF
 set -euo pipefail
 cd ${REPO_DIR}
-
 : > split_remote_server.log
 
 ${REMOTE_CMD_BASE} \
@@ -100,72 +118,54 @@ ${REMOTE_CMD_BASE} \
   --node-to-starts-file ${nts} \
   > split_remote_server.log 2>&1 &
 
-PID=\$!
-
-# 起動待ち（固定文字列 grep）
-timeout ${TIMEOUT}s bash <<'INNER'
-set -e
-while true; do
-  if grep -F -m1 "${TARGET_LOG}" split_remote_server.log >/dev/null 2>&1; then
-    exit 0
-  fi
-  sleep 0.2
-done
-INNER
-
-echo "[INFO] ${host}: 起動OK"
+echo "[REMOTE] started pid=\$! (log=split_remote_server.log)"
 EOF
 
-  if [[ $? -ne 0 ]]; then
-    echo "[WARN] ${host}: タイムアウト (${TIMEOUT}s)"
+  if ! wait_server_ready "${ep}" "${TIMEOUT}"; then
+    echo "[ERROR] ${host}: 起動失敗の可能性。ログ末尾を表示します。"
+    ssh "$host" "tail -n 120 split_remote_server.log || true" || true
+    return 1
   fi
+
+  echo "[INFO] ${host}: 起動ログ（末尾20行）"
+  ssh "$host" "tail -n 20 split_remote_server.log || true" || true
 }
 
-
+############################################################
+# 1) Start remote servers (parallel) and wait
+############################################################
+pids=()
 for entry in "${SERVERS[@]}"; do
   eval "$entry"
   start_remote_server "$host" "$id" "$ip" "$port" "$nts" &
+  pids+=($!)
 done
-wait
 
-# node_to_starts からスタートノードを全取得（サーバ起動と同じ splits を参照）
-# START_NODES_LIST=(${(s: :)$(
-#   python3 - \
-#     "base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts_server0.json" \
-#     "base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts_server1.json" \
-#   <<'PY'
-# import json, sys
-# starts=set()
-# for path in sys.argv[1:]:
-#     try:
-#         data=json.load(open(path))
-#     except Exception as e:
-#         print(f"[WARN] failed to load {path}: {e}", file=sys.stderr)
-#         continue
-#     for vals in data.values():
-#         if not isinstance(vals, list):
-#             continue
-#         for v in vals:
-#             try:
-#                 starts.add(int(v))
-#             except Exception:
-#                 pass
-# print(" ".join(str(x) for x in sorted(starts)))
-# PY
-# )})
+ok=1
+for pid in "${pids[@]}"; do
+  if ! wait "$pid"; then ok=0; fi
+done
 
+if [[ "$ok" -ne 1 ]]; then
+  echo "[FATAL] サーバ起動が揃わなかったため controller を実行しません。"
+  exit 1
+fi
+
+echo "[INFO] 全サーバ起動確認OK。controller を開始します。"
+
+############################################################
+# 2) Run controller
+############################################################
 for start_node in "${START_NODES_LIST[@]}"; do
   echo "=== [START_NODE] ${start_node} ==="
   python3 base/auth-many-server/split_controller.py \
     --servers 2 \
     --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
     --start-node "${start_node}" \
-    --walks ${RW_WAKLS} \
+    --walks ${RW_WALKS} \
     --alpha ${ALPHA} \
-    --seed 42 \
-    --node-to-starts-file "base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts.json"
+    --seed 42
 done
-
 
 ############################################################
 # Controller duration の合計（ログから集計）
@@ -201,11 +201,4 @@ auth_total=$(
 
 echo "[TOTAL] authorization_time_sum=${auth_total}s"
 
-snapshot_memory "1/3: after totals (immediate)"
-sleep 2
-snapshot_memory "2/3: after totals (+2s)"
-sleep 2
-snapshot_memory "3/3: after totals (+4s)"
-
-echo "[MEMORY] saved: ${MEM_LOG_FILE}"
-
+echo "[DONE]"

@@ -13,7 +13,7 @@ TIMEOUT=10                          # サーバ起動確認の最大待機秒数
 SEED_BASE=42                        # 乱数シード基準値
 
 ## --- ファイル設定 ---
-EDGE_FILE="dataset/Louvain/graph/karate.gr"
+EDGE_FILE="dataset/Louvain/graph/fb-pages-company.gr"
 REPO_DIR="./"
 RUNS_DIR="runs"
 LOG_PREFIX="base_many_server"
@@ -21,12 +21,12 @@ LOG_PREFIX="base_many_server"
 ## --- サーバ設定 ---
 SERVERS=(
   "host=ab05 id=0 ip=10.58.60.5 port=3000"
-  "host=ab06 id=1 ip=10.58.60.6 port=3000"
+  # "host=ab06 id=1 ip=10.58.60.6 port=3000"
 )
 
 ## --- コントローラパラメータ ---
 WALKS_LIST=(100)
-ALPHA_LIST=(0.1 0.05 0.04 0.03 0.02 0.01)
+ALPHA_LIST=(0.1 0.08 0.06 0.04 0.02 0.01)
 START_NODE=1
 
 ## --- スクリプト名切り替え ---

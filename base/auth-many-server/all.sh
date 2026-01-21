@@ -8,6 +8,11 @@ set -euo pipefail
 
 # VISIBLE_MODE=0 ./base/auth-many-server/all.sh 2
 # VISIBLE_MODE=1 ./base/auth-many-server/all.sh 2
+
+# table
+  # python3 base/auth-many-server/create_json_table.py \
+  #     ./dataset/Louvain/graph/karate.gr \
+  #     --ng-ratio 0.3 
 ############################################################
 
 ## --- 実行回数設定 ---
@@ -16,7 +21,7 @@ TIMEOUT=10                        # サーバ起動待機の最大時間 [秒]
 SEED_BASE=42                      # 乱数シードの基準値
 
 ## --- ファイル設定 ---
-EDGE_FILE="dataset/Louvain/graph/karate.gr"
+EDGE_FILE="dataset/Louvain/graph/fb-pages-company.gr"
 # AUTH_JSON="base/auth-many-server/auth_by_start.json"
 AUTH_JSON="base/auth-many-server/auth_by_start.json"
 NODE_TO_STARTS_JSON="base/auth-many-server/node_to_starts.json"
@@ -36,11 +41,13 @@ SERVERS=(
 
 ## --- スイープパラメータ設定 ---
 # ここを変えるだけで一括実験条件が変わる！
-WALKS_LIST=(10)
-ALPHA_LIST=(0.1)
+WALKS_LIST=(100)
+ALPHA_LIST=(0.1 0.08 0.06 0.04 0.02 0.01)
 NG_RATIO_LIST=(0.3)
 START_NODE=1                      # RWの開始ノード
 DEFAULT_WALKS=10                  # 参考値（controller.pyのデフォルト想定）
+PPR_MODE=${PPR_MODE:-0}
+VISIBLE_MODE=${VISIBLE_MODE:-0}
 # PPR_MODE=1                      # 1 にするとサーバを --ppr-mode で起動
 # VISIBLE_MODE=0                    # 1 で remote_server_visi.py を利用
 
@@ -167,7 +174,7 @@ for ng_ratio in "${NG_RATIO_LIST[@]}"; do
       echo ""
       echo "=== [PARAM SET] ng_ratio=${ng_ratio}, walks=${walks}, alpha=${alpha} ==="
       # LOG_FILE="${LOG_DIR}/test/result_ng${ng_ratio_label}_walks${walks}_alpha${alpha}.log"
-      LOG_FILE="${LOG_DIR}/test/${VISIBLE_SUFFIX}result_ng${ng_ratio_label}_walks${walks}_alpha${alpha}.log"
+      LOG_FILE="${LOG_DIR}/test/error_${VISIBLE_SUFFIX}result_ng${ng_ratio_label}_walks${walks}_alpha${alpha}.log"
       echo "=== RUN START: walks=${walks}, alpha=${alpha} ===" > "${LOG_FILE}"
 
       durations=()

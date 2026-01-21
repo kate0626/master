@@ -112,6 +112,35 @@ def main() -> None:
     print(f"Avg length: {avg_len:.3f}, total steps: {total_steps}")
     print(f"[Controller] duration {duration:.6f}s")
 
+    # RWerごとの訪問回数（差分）と累計を作成
+    per_walk_access = []
+    cumulative_access = defaultdict(int)
+    cumulative_total_visits = 0
+    cumulative_series = []
+    for idx, w in enumerate(walks, start=1):
+        per_walk = defaultdict(int)
+        for ent in w.get("path", []):
+            per_walk[str(ent)] += 1
+        per_walk_total = sum(per_walk.values())
+        per_walk_access.append(
+            {
+                "walk_index": idx,
+                "access": dict(per_walk),
+                "total_visits": per_walk_total,
+                "unique_entities": len(per_walk),
+            }
+        )
+        for ent, count in per_walk.items():
+            cumulative_access[ent] += count
+        cumulative_total_visits += per_walk_total
+        cumulative_series.append(
+            {
+                "walk_index": idx,
+                "total_visits": cumulative_total_visits,
+                "unique_entities": len(cumulative_access),
+            }
+        )
+
     # サーバー訪問回数のカウント
     server_visits = defaultdict(int)
     for w in walks:
@@ -213,6 +242,23 @@ def main() -> None:
     out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
     print(f"[Controller] Saved aggregated transition stats to {out_path}")
     # === 追加ここまで ===
+
+    per_walk_path = Path(f"{args.walks}_{args.alpha}_per_walk_access.json")
+    per_walk_payload = {
+        "per_walk_access": per_walk_access,
+        "cumulative_series": cumulative_series,
+        "controller": {
+            "start_node": int(args.start_node),
+            "start_server": int(start_server),
+            "servers": int(args.servers),
+            "alpha": float(args.alpha),
+            "walks": int(args.walks),
+            "seed": args.seed,
+            "server_endpoints": list(args.server_endpoints),
+        },
+    }
+    per_walk_path.write_text(json.dumps(per_walk_payload, indent=2), encoding="utf-8")
+    print(f"[Controller] Saved per-walk access stats to {per_walk_path}")
 
 
 if __name__ == "__main__":

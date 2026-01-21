@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
+import sys
 
 NodeId = Union[int, str]
 NodeOrEdgeId = Union[int, str]
@@ -24,6 +25,29 @@ NodeOrEdgeId = Union[int, str]
 
 # ---------------------------------------------------------------------------
 # Utilities
+"""
+python3 base/auth-many-server/split_remote_server.py \
+  --server-id 0 \
+  --server-count 2 \
+  --edges dataset/Louvain/graph/amazon0601.gr \
+  --host 10.58.60.6 \
+  --port 3000 \
+  --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
+  --node-to-starts-file base/auth-many-server/data/splits/amazon0601/0.3/node_to_starts_server0.json \
+  --owned-hints-only
+
+python3 base/auth-many-server/split_remote_server.py \
+  --server-id 1 \
+  --server-count 2 \
+  --edges dataset/Louvain/graph/amazon0601.gr \
+  --host 10.58.60.11 \
+  --port 3000 \
+  --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
+  --node-to-starts-file base/auth-many-server/data/splits/amazon0601/0.3/node_to_starts_server1.json \
+  --owned-hints-only
+"""
+
+
 # ---------------------------------------------------------------------------
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
@@ -379,7 +403,8 @@ def build_owner_map_from_sibling_node_to_starts_files(
     dir_path = base_path.parent
     owner_map: Dict[str, int] = {}
     pat = re.compile(r"node_to_starts_server(\d+)\.json$")
-
+    # pat = re.compile(r"entity_to_denied_starts_server(\d+)\.json$")
+    # 重要：変更
     for p in sorted(dir_path.glob("node_to_starts_server*.json")):
         m = pat.search(p.name)
         if not m:
@@ -510,7 +535,7 @@ class PeerWalker:
             return False
         # entity_to_denied_starts:
         #   entity -> Set[start] (NGになっている start)
-        denied_starts = self.entity_to_starts.get(entity)
+        denied_starts = self.node_to_starts.get(entity)
         # denied_starts が存在しない or 空 → 誰もNGにしていない → OK
         if not denied_starts:
             return True
@@ -912,6 +937,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         # self._write_json(
         #     {"allowed": allowed, "entity": entity, "server_id": self.server.server_id}
         # )
+
         # [deny方式:]
         #   entity_to_denied_starts: { entity -> set(denied_start_nodes) }
         denied_starts = self.server.node_to_starts.get(entity, set())
