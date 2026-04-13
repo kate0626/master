@@ -24,8 +24,8 @@ ROOT_DIRS = {
 LOG_PATTERN = "*.memory.log"
 
 # 出力ファイル
-OUT_BREAKDOWN = "cache_memory_breakdown_grouped.png"
-OUT_RSS_TOTAL = "cache_rss_total_by_graph.png"
+OUT_BREAKDOWN = "[slide]cache_memory_breakdown_grouped.png"
+OUT_RSS_TOTAL = "[slide]cache_rss_total_by_graph.png"
 
 UNIT = "MB"  # bytes_est 図の単位
 USE_LOG_SCALE = True  # fb 等を含むなら True 推奨
@@ -34,6 +34,25 @@ USE_LOG_SCALE = True  # fb 等を含むなら True 推奨
 # ============================================================
 # ログ形式
 # ============================================================
+
+"""
+    neighbor_map
+    グラフの隣接リスト・近傍マップなどの保持データ。
+    グラフ構造そのもののメモリに近い。
+
+    node_to_starts
+    ノードからスタート候補を引くためのマップ。
+    始点探索やアクセス補助用の索引。
+
+    auth_cache
+    認可（auth）結果のキャッシュ。
+    認可判定を繰り返し使うためのキャッシュ領域。
+
+    counters
+    訪問回数やアクセス数などの集計用カウンタ。
+    RWの統計・頻度カウント用途。
+"""
+
 SNAPSHOT_RE = re.compile(
     r"^=+\n=== \[MEMORY SNAPSHOT .*?\] ===.*?\n=+\n",
     re.MULTILINE,
@@ -45,9 +64,9 @@ ENDPOINT_RE = re.compile(r"--- endpoint=([^\s]+) ---\s*", re.MULTILINE)
 # ============================================================
 COMPONENTS = [
     "neighbor_map",
-    "node_to_starts",
+    # "node_to_starts",
     "auth_cache",  # authz_cache を吸収
-    "counters",
+    # "counters",
 ]
 
 
@@ -118,26 +137,6 @@ def extract_endpoint_json_from_snapshot(
     return out
 
 
-# ============================================================
-# JSON → ServerAgg
-# ============================================================
-# def to_serveragg(obj: Dict[str, Any]) -> ServerAgg:
-#     be_raw = obj.get("bytes_est", {}) or {}
-
-#     # authz_cache → auth_cache に統一
-#     if "auth_cache" not in be_raw and "authz_cache" in be_raw:
-#         be_raw = dict(be_raw)
-#         be_raw["auth_cache"] = be_raw.get("authz_cache", 0.0)
-
-#     be = {k: float(be_raw.get(k, 0.0)) for k in COMPONENTS}
-
-
-#     return ServerAgg(
-#         rss_kb=float(obj.get("rss_kb", 0.0)),
-#         rss_kb_current=float(obj.get("rss_kb_current", 0.0) or 0.0),
-#         bytes_est=be,
-#         bytes_est_total=float(obj.get("bytes_est_total", sum(be.values()))),
-#     )
 def to_serveragg(obj: Dict[str, Any], label: str) -> ServerAgg:
     be_raw = obj.get("bytes_est", {}) or {}
 
@@ -218,7 +217,10 @@ def plot_memory_breakdown_total(summary: Dict[str, Dict[str, Dict[str, ServerAgg
     bar_w = 0.8 / (len(COMPONENTS) * len(labels))
 
     plt.figure(figsize=(max(8, len(graphs) * 1.3), 5))
+    # colors = {"cache": "navy", "auth": "red"}
 
+    # ラベルではなくて、コンポーネントごとに色を固定したい場合は以下のようにする
+    colors = {"neighbor_map": "navy", "auth_cache": "red"}
     idx = 0
     for label in labels:
         for comp in COMPONENTS:
@@ -230,7 +232,28 @@ def plot_memory_breakdown_total(summary: Dict[str, Dict[str, Dict[str, ServerAgg
                 )
                 for g in graphs
             ]
-            plt.bar(x + idx * bar_w, vals, width=bar_w, label=f"{label}:{comp}")
+            # ここで数字を出している
+            for g in graphs:
+                if label in summary[g]:
+                    neighbor = summary[g][label]["TOTAL"].bytes_est.get(
+                        "neighbor_map", 0.0
+                    )
+                    auth = summary[g][label]["TOTAL"].bytes_est.get("auth_cache", 0.0)
+
+                    if neighbor > 0 and auth > 0:
+                        print(max(neighbor, auth))
+                        print(min(neighbor, auth))
+                        print(max(neighbor, auth))
+                        print(min(neighbor, auth))
+                        ratio = max(neighbor, auth) / min(neighbor, auth)
+                        percent = min(neighbor, auth) / max(neighbor, auth) * 100
+
+                        print(f"{g}: {ratio:.3f}x ({percent:.3f}%)")
+
+            color = colors.get(comp, None)
+            plt.bar(
+                x + idx * bar_w, vals, width=bar_w, label=f"{label}:{comp}", color=color
+            )
             idx += 1
 
     plt.xticks(x + bar_w * (idx - 1) / 2, graphs, rotation=20)

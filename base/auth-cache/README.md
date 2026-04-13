@@ -5,6 +5,7 @@
 
 - 重要　not useに関して
 現状で使用しているのは、以下のみ
+
 認可なしbase
 キャッシュなし認可ありauth-many-server/split 
 ありauth-cache

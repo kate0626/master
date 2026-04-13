@@ -1,0 +1,46 @@
+kate@abilene06:~/runs/auth/D2/D3$ python3 approach.py
+=== Radius Cover Computation ===
+Edges file : ./../../../../dataset/Louvain/graph/amazon0601.gr
+Log file   : ../1-approach/0.3/amazon0601/start=0_walks=100_alpha=0.1_seed=42_per_walk_access.json
+Start node : 0
+RMAX       : 4
+
+Running local BFS...
+=== Aggregated Cover(r) ===
+r=0: Cover_V=0.2904  Cover_E=0.2961
+r=1: Cover_V=0.5712  Cover_E=0.5815
+r=2: Cover_V=0.7846  Cover_E=0.8090
+r=3: Cover_V=0.9250  Cover_E=0.9421
+r=4: Cover_V=0.9885  Cover_E=0.9914
+
+kate@abilene06:~/runs/auth/D2/D3$ python3 approach.py
+=== Radius Cover Computation ===
+Edges file : ./../../../../dataset/Louvain/graph/vldb.gr
+Log file   : ../1-approach/0.3/vldb/start=0_walks=100_alpha=0.1_seed=42_per_walk_access.json
+Start node : 0
+RMAX       : 4
+
+Running local BFS...
+=== Aggregated Cover(r) ===
+r=0: Cover_V=0.3183  Cover_E=0.3507
+r=1: Cover_V=0.6817  Cover_E=0.7134
+r=2: Cover_V=0.8463  Cover_E=0.8677
+r=3: Cover_V=0.9403  Cover_E=0.9599
+r=4: Cover_V=0.9892  Cover_E=0.9920
+
+kate@abilene06:~/runs/auth/D2/D3$ python3 approach.py
+=== Radius Cover Computation ===
+Edges file : ./../../../../dataset/Louvain/graph/karate.gr
+Log file   : ../1-approach/0.3/karate/start=0_walks=100_alpha=0.1_seed=42_per_walk_access.json
+Start node : 0
+RMAX       : 4
+
+Running local BFS...
+=== Aggregated Cover(r) ===
+r=0: Cover_V=0.4017  Cover_E=0.5379
+r=1: Cover_V=0.9255  Cover_E=0.9692
+r=2: Cover_V=0.9959  Cover_E=1.0000
+r=3: Cover_V=1.0000  Cover_E=1.0000
+r=4: Cover_V=1.0000  Cover_E=1.0000
+
+
