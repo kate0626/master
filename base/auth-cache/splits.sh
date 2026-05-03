@@ -11,7 +11,7 @@ HEALTH_RETRY=60          # /health の最大試行回数（1回=0.5sなら30秒�
 HEALTH_STABLE=2          # 連続OK回数（2回連続OKでREADY扱い）
 HEALTH_INTERVAL=1      # 何秒おきに叩くか
 
-GRAPH=karate
+GRAPH=amazon0601
 EDGE_FILE="dataset/Louvain/graph/${GRAPH}.gr"
 REPO_DIR="./"
 LOG_DIR="runs/auth/D1:cache/0.3/"

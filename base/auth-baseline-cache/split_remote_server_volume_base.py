@@ -29,24 +29,27 @@ NodeOrEdgeId = Union[int, str]
 python3 base/auth-baseline-cache/split_remote_server_volume_base.py \
   --server-id 0 \
   --server-count 2 \
-  --edges dataset/Louvain/graph/karate.gr \
+  --edges dataset/Louvain/graph/vldb.gr \
   --host 10.58.60.6 \
   --port 3000 \
   --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
-  --node-to-starts-file base/auth-many-server/data/splits/karate/0.3/node_to_starts_server0.json \
+  --node-to-starts-file base/auth-many-server/data/splits/vldb/0./node_to_starts_server0.json \
   --owned-hints-only \
   --cache-policy lru \
   --cache-capacity 100
 #   --cache-policy arc
+#   --cache-policy lru 
+#   --cache-policy none
+#   --cache-policy memo
   
 python3 base/auth-baseline-cache/split_remote_server_volume_base.py \
   --server-id 1 \
   --server-count 2 \
-  --edges dataset/Louvain/graph/karate.gr \
+  --edges dataset/Louvain/graph/vldb.gr \
   --host 10.58.60.11 \
   --port 3000 \
   --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
-  --node-to-starts-file base/auth-many-server/data/splits/karate/0.3/node_to_starts_server1.json \
+  --node-to-starts-file base/auth-many-server/data/splits/vldb/0.3/node_to_starts_server1.json \
   --owned-hints-only \
   --cache-policy lru \
   --cache-capacity 100
@@ -55,7 +58,7 @@ python3 base/auth-baseline-cache/split_remote_server_volume_base.py \
 python3 base/auth-baseline-cache/split_controller.py \
   --servers 2 \
   --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
-  --start-node 0 \
+  --start-node 1 \
   --walks 10 \
   --alpha 0.1 \
   --seed 42
@@ -132,6 +135,25 @@ class BaseDecisionCache:
             "current_weight": self.current_weight(),
             "max_weight": self.max_weight(),
         }
+
+
+class NoDecisionCache(BaseDecisionCache):
+    def __contains__(self, key: Tuple[int, str]) -> bool:
+        return False
+
+    def __getitem__(self, key: Tuple[int, str]) -> bool:
+        raise KeyError(key)
+
+    def __setitem__(self, key: Tuple[int, str], value: bool) -> None:
+        return None
+
+    def __len__(self) -> int:
+        return 0
+
+    def stats(self) -> Dict[str, Any]:
+        base = super().stats()
+        base.update({"policy": "none"})
+        return base
 
 
 class UnlimitedDecisionCache(BaseDecisionCache):
@@ -519,6 +541,8 @@ def build_authz_cache(
 ) -> BaseDecisionCache:
     policy_name = (policy or "none").lower()
     if policy_name == "none":
+        return NoDecisionCache()
+    if policy_name == "memo":
         return UnlimitedDecisionCache(sizer=sizer)
     if policy_name == "lru":
         return LRUDecisionCache(capacity, sizer=sizer)
@@ -1171,6 +1195,7 @@ class PeerWalker:
         self, start_node: Optional[int], candidate: Dict[str, Any]
     ) -> bool:
         target = candidate["node_id"]
+        candidate_server = candidate.get("server_id")
 
         if start_node is None:
             return False
@@ -1193,11 +1218,21 @@ class PeerWalker:
         if self.server is not None and ckey in self.server.authz_cache:
             # print("キャッシュありの時")
             self.server.auth_cache_hit += 1
+            print(
+                f"[Server {self.shard.server_id}] candidate_cache_hit "
+                f"start={start_node} target={target} candidate_server={candidate_server} "
+                f"owner={owner_sid} result={self.server.authz_cache[ckey]}"
+            )
             return bool(self.server.authz_cache[ckey])
 
         if self.server is not None:
             # print("キャッシュなしの時")
             self.server.auth_cache_miss += 1
+        print(
+            f"[Server {self.shard.server_id}] candidate_check "
+            f"start={start_node} target={target} candidate_server={candidate_server} "
+            f"owner={owner_sid}"
+        )
 
         # 認可判定（元と同じ）
         t0 = time.perf_counter()
@@ -1214,6 +1249,10 @@ class PeerWalker:
         # ★追加：結果を保存（ALLOW/DENY両方）
         if self.server is not None:
             self.server.authz_cache[ckey] = bool(allowed)
+        print(
+            f"[Server {self.shard.server_id}] candidate_result "
+            f"start={start_node} target={target} allowed={allowed}"
+        )
 
         return bool(allowed)
 
@@ -1321,7 +1360,15 @@ class PeerWalker:
             hops_done += 1
 
             owner = self.shard.partitioner.assign_entity(current_entity)
+            print(
+                f"[Server {current_sid}] continue_check hop={hops_done} "
+                f"entity={current_entity} owner={owner} current_server={current_sid}"
+            )
             if owner != current_sid:
+                print(
+                    f"[Server {current_sid}] handoff_by_owner -> server {owner} "
+                    f"entity={current_entity} path_len={len(path)}"
+                )
                 state_out = {
                     "start_node": start_node,
                     "current_node": current_entity,
@@ -1332,8 +1379,16 @@ class PeerWalker:
                     "hops_done": hops_done,
                 }
                 return self._post_continue(owner, state_out)
+            print(
+                f"[Server {current_sid}] stay_local_by_owner "
+                f"entity={current_entity} owner={owner}"
+            )
 
             neighbors = self._get_local_neighbors(current_entity)
+            print(
+                f"[Server {current_sid}] neighbors "
+                f"entity={current_entity} count={len(neighbors)}"
+            )
             next_choice, denial_payload = self._select_next_neighbor(
                 rng, neighbors, start_node, current_entity
             )
@@ -1350,6 +1405,10 @@ class PeerWalker:
 
             next_entity = next_choice["node_id"]
             next_server = int(next_choice["server_id"])
+            print(
+                f"[Server {current_sid}] selected_next current={current_entity} "
+                f"next={next_entity} next_server={next_server}"
+            )
 
             self._record_entity_visit(next_entity)
 
@@ -1358,6 +1417,10 @@ class PeerWalker:
             current_entity = next_entity
 
             if next_server != current_sid:
+                print(
+                    f"[Server {current_sid}] handoff_by_next -> server {next_server} "
+                    f"next_entity={current_entity} path_len={len(path)}"
+                )
                 state_out = {
                     "start_node": start_node,
                     "current_node": current_entity,
@@ -1741,9 +1804,9 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--cache-policy",
-        choices=["none", "lru", "arc"],
+        choices=["none", "memo", "lru", "arc"],
         default="none",
-        help="Authorization decision cache policy.",
+        help="Authorization decision cache policy. Use 'none' to disable caching.",
     )
     parser.add_argument(
         "--cache-capacity",
