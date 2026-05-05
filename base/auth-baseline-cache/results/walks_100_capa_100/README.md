@@ -1,0 +1,13 @@
+GRAPH=vldb
+
+RW_WALKS=100
+
+ALPHA=0.1
+
+NG_RATE="0.3"
+
+START_NODES_LIST=(0 1 2 3 4)
+
+CACHE_POLICIES=( "lru"  "arc"  "memo" "none" )
+
+CACHE_CAPACITY=100

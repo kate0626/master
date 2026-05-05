@@ -251,7 +251,9 @@ HEALTH_INTERVAL=1      # 何秒おきに叩くか
 # fb-caltechはうまくいかない
 # karate, amazon0601, vldb はOK
 
-GRAPH=amazon0601
+
+# 次はアマゾンでやる、飲み変え前
+GRAPH=karate
 EDGE_FILE="dataset/Louvain/graph/${GRAPH}.gr"
 REPO_DIR="./"
 # --- スクリプト自身の絶対パスを取得（zsh / bash どちらでも動く） ---
@@ -265,13 +267,13 @@ else
 fi
 SCRIPT_DIR="$(cd "$(dirname "${_SELF}")" && pwd -P)"
 unset _SELF
-RW_WALKS=100
+RW_WALKS=1000
 ALPHA=0.1
 NG_RATE="0.3"
 START_NODES_LIST=(0 1 2 3 4)
 
 # ====== 全キャッシュポリシーを順番に試す ======
-CACHE_POLICIES=("none" "arc")
+CACHE_POLICIES=( "lru"  "arc"  "memo" "none" )
 CACHE_CAPACITY=100
 
 # ====== サーバ定義 ======

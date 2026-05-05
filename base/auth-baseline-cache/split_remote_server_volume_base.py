@@ -33,9 +33,9 @@ python3 base/auth-baseline-cache/split_remote_server_volume_base.py \
   --host 10.58.60.6 \
   --port 3000 \
   --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
-  --node-to-starts-file base/auth-many-server/data/splits/vldb/0./node_to_starts_server0.json \
+  --node-to-starts-file base/auth-many-server/data/splits/vldb/0.3/node_to_starts_server0.json \
   --owned-hints-only \
-  --cache-policy lru \
+  --cache-policy none \
   --cache-capacity 100
 #   --cache-policy arc
 #   --cache-policy lru 
@@ -51,7 +51,7 @@ python3 base/auth-baseline-cache/split_remote_server_volume_base.py \
   --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
   --node-to-starts-file base/auth-many-server/data/splits/vldb/0.3/node_to_starts_server1.json \
   --owned-hints-only \
-  --cache-policy lru \
+  --cache-policy none \
   --cache-capacity 100
 #   --cache-policy arc
   
@@ -1537,6 +1537,9 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         if parsed.path == "/authorize":
             self._handle_authorize()
             return
+        if parsed.path == "/cache/reset":
+            self._handle_cache_reset()
+            return
         self.send_error(404, "Unknown path")
 
     def _handle_walk_start(self) -> None:
@@ -1675,6 +1678,32 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             allowed = start_int not in denied_starts
         self._write_json(
             {"allowed": allowed, "entity": entity, "server_id": self.server.server_id}
+        )
+
+    def _handle_cache_reset(self) -> None:
+        s = self.server
+        s.authz_cache = build_authz_cache(
+            s.auth_cache_policy, s.auth_cache_capacity, sizer=s.auth_cache_sizer
+        )
+        s.auth_cache_hit = 0
+        s.auth_cache_miss = 0
+        s.auth_time_total = 0.0
+        s.auth_calls = 0
+        s.local_auth_calls = 0
+        s.remote_auth_calls = 0
+        s.walk_time_total = 0.0
+        s.walk_calls = 0
+        s.access_counter.clear()
+        s.authorized_counter.clear()
+        s.authorization_attempt_counter.clear()
+        s.authorization_denied_counter.clear()
+        s.transition_counter.clear()
+        self._write_json(
+            {
+                "status": "ok",
+                "policy": s.auth_cache_policy,
+                "capacity": s.auth_cache_capacity,
+            }
         )
 
     def log_message(self, format: str, *args) -> None:

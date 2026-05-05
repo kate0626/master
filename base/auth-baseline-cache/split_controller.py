@@ -235,12 +235,12 @@ def pick_start_server(
 
 # キャッシュをサーバ終了以外にリセットする関数
 def reset_cache(endpoint: str, timeout: float) -> bool:
-
     try:
-        _ = post_json(endpoint, "/cache/reset", payload={}, timeout=timeout)
+        resp = post_json(endpoint, "/cache/reset", payload={}, timeout=timeout)
+        print(f"[Controller] Reset OK {endpoint}: policy={resp.get('policy')}, capacity={resp.get('capacity')}")
         return True
     except Exception as e:
-        print(f"[Controller] Failed to reset cache on {endpoint}: {e}")
+        print(f"[Controller] *** RESET FAILED {endpoint}: {e} ***")
         return False
 
 
@@ -274,6 +274,12 @@ def main() -> None:
     }
 
     print(f"[Controller] start_server={start_server}, endpoint={endpoint}")
+
+    # walk前にリセット：キャッシュ・統計を初期化してこのrunだけの値を計測する
+    print("[Controller] Resetting caches on all servers before walk...")
+    for ep in args.server_endpoints:
+        reset_cache(ep, timeout=args.request_timeout)
+
     res = start_walk_on_server(endpoint, payload, timeout=args.request_timeout)
 
     walks = res.get("walks", [])
@@ -294,11 +300,6 @@ def main() -> None:
     print("Server visit counts:")
     for sid in range(args.servers):
         print(f"  Server {sid}: {server_visits.get(sid, 0)}")
-
-    # キャッシュのリセットを行う
-    print("[Controller] Resetting caches on all servers...")
-    for ep in args.server_endpoints:
-        reset_cache(ep, timeout=args.request_timeout)
 
     # 統計統合 + memory（RSS/テーブル規模）も回収
     print("\n[Controller] Collecting access statistics from all servers...")
@@ -322,7 +323,8 @@ def main() -> None:
         stats = fetch_access_stats(ep, timeout=args.request_timeout)
         if not stats:
             continue
-        print(f"[Controller] Merging stats from server {sid} ({ep})")
+        reported_policy = stats.get("auth_cache_policy", "N/A")
+        print(f"[Controller] Merging stats from server {sid} ({ep})  actual_policy={reported_policy}")
         per_server_stats.append({"server_id": sid, "endpoint": ep, "stats": stats})
 
         for k, v in stats.get("access", {}).items():
