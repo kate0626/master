@@ -555,12 +555,16 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
-def cache_entity_key(entity: Any) -> str:
+def cache_entity_key(entity: Any, node_only: bool = False) -> str:
     # node: "node:12" / edge: "edge_1_2"
     if isinstance(entity, int):
         return f"node:{entity}"
     if isinstance(entity, str):
         if entity.startswith("edge_"):
+            if node_only:
+                # edge_U_V → node:U (最小ノードIDに縮退)
+                parts = entity.split("_", 2)
+                return f"node:{parts[1]}" if len(parts) >= 2 else entity
             return entity
         if entity.isdigit():
             return f"node:{entity}"
@@ -1211,28 +1215,29 @@ class PeerWalker:
                 owner_sid = self.shard.partitioner.assign_entity(target)
 
         # ★追加：サーバ常駐キャッシュ参照
-        ekey = cache_entity_key(target)
+        _node_only = getattr(self.server, "cache_key_mode", "full") == "node_only"
+        ekey = cache_entity_key(target, node_only=_node_only)
         ckey = (int(start_node), ekey)
         # print(ekey, ckey)
 
         if self.server is not None and ckey in self.server.authz_cache:
             # print("キャッシュありの時")
             self.server.auth_cache_hit += 1
-            print(
-                f"[Server {self.shard.server_id}] candidate_cache_hit "
-                f"start={start_node} target={target} candidate_server={candidate_server} "
-                f"owner={owner_sid} result={self.server.authz_cache[ckey]}"
-            )
+            # print(
+            #     f"[Server {self.shard.server_id}] candidate_cache_hit "
+            #     f"start={start_node} target={target} candidate_server={candidate_server} "
+            #     f"owner={owner_sid} result={self.server.authz_cache[ckey]}"
+            # )
             return bool(self.server.authz_cache[ckey])
 
         if self.server is not None:
             # print("キャッシュなしの時")
             self.server.auth_cache_miss += 1
-        print(
-            f"[Server {self.shard.server_id}] candidate_check "
-            f"start={start_node} target={target} candidate_server={candidate_server} "
-            f"owner={owner_sid}"
-        )
+        # print(
+        #     f"[Server {self.shard.server_id}] candidate_check "
+        #     f"start={start_node} target={target} candidate_server={candidate_server} "
+        #     f"owner={owner_sid}"
+        # )
 
         # 認可判定（元と同じ）
         t0 = time.perf_counter()
@@ -1360,15 +1365,15 @@ class PeerWalker:
             hops_done += 1
 
             owner = self.shard.partitioner.assign_entity(current_entity)
-            print(
-                f"[Server {current_sid}] continue_check hop={hops_done} "
-                f"entity={current_entity} owner={owner} current_server={current_sid}"
-            )
+            # print(
+            #     f"[Server {current_sid}] continue_check hop={hops_done} "
+            #     f"entity={current_entity} owner={owner} current_server={current_sid}"
+            # )
             if owner != current_sid:
-                print(
-                    f"[Server {current_sid}] handoff_by_owner -> server {owner} "
-                    f"entity={current_entity} path_len={len(path)}"
-                )
+                # print(
+                #     f"[Server {current_sid}] handoff_by_owner -> server {owner} "
+                #     f"entity={current_entity} path_len={len(path)}"
+                # )
                 state_out = {
                     "start_node": start_node,
                     "current_node": current_entity,
@@ -1379,16 +1384,16 @@ class PeerWalker:
                     "hops_done": hops_done,
                 }
                 return self._post_continue(owner, state_out)
-            print(
-                f"[Server {current_sid}] stay_local_by_owner "
-                f"entity={current_entity} owner={owner}"
-            )
+            # print(
+            #     f"[Server {current_sid}] stay_local_by_owner "
+            #     f"entity={current_entity} owner={owner}"
+            # )
 
             neighbors = self._get_local_neighbors(current_entity)
-            print(
-                f"[Server {current_sid}] neighbors "
-                f"entity={current_entity} count={len(neighbors)}"
-            )
+            # print(
+            #     f"[Server {current_sid}] neighbors "
+            #     f"entity={current_entity} count={len(neighbors)}"
+            # )
             next_choice, denial_payload = self._select_next_neighbor(
                 rng, neighbors, start_node, current_entity
             )
@@ -1405,10 +1410,10 @@ class PeerWalker:
 
             next_entity = next_choice["node_id"]
             next_server = int(next_choice["server_id"])
-            print(
-                f"[Server {current_sid}] selected_next current={current_entity} "
-                f"next={next_entity} next_server={next_server}"
-            )
+            # print(
+            #     f"[Server {current_sid}] selected_next current={current_entity} "
+            #     f"next={next_entity} next_server={next_server}"
+            # )
 
             self._record_entity_visit(next_entity)
 
@@ -1417,10 +1422,10 @@ class PeerWalker:
             current_entity = next_entity
 
             if next_server != current_sid:
-                print(
-                    f"[Server {current_sid}] handoff_by_next -> server {next_server} "
-                    f"next_entity={current_entity} path_len={len(path)}"
-                )
+                # print(
+                #     f"[Server {current_sid}] handoff_by_next -> server {next_server} "
+                #     f"next_entity={current_entity} path_len={len(path)}"
+                # )
                 state_out = {
                     "start_node": start_node,
                     "current_node": current_entity,
@@ -1741,6 +1746,7 @@ class GraphShardServer(ThreadingHTTPServer):
         cache_policy: str = "none",
         cache_capacity: int = 0,
         cache_sizer: Optional[DecisionCacheSizer] = None,
+        cache_key_mode: str = "full",
     ) -> None:
         super().__init__((host, port), EdgeAwareHandler)
         self.shard = shard
@@ -1767,6 +1773,7 @@ class GraphShardServer(ThreadingHTTPServer):
         self.auth_cache_policy = cache_policy
         self.auth_cache_capacity = cache_capacity
         self.auth_cache_sizer = cache_sizer or DecisionCacheSizer()
+        self.cache_key_mode = cache_key_mode
         self.authz_cache = build_authz_cache(
             cache_policy, cache_capacity, sizer=self.auth_cache_sizer
         )
@@ -1890,6 +1897,12 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Dump filtered auth/node_to_starts to auth_dump_server{sid}.json for debugging.",
     )
+    parser.add_argument(
+        "--cache-key-mode",
+        choices=["full", "node_only"],
+        default="full",
+        help="Cache key granularity. 'node_only' maps edge entities to their smaller endpoint node (原因2診断用).",
+    )
     return parser.parse_args()
 
 
@@ -1964,6 +1977,7 @@ def main() -> None:
         cache_policy=args.cache_policy,
         cache_capacity=args.cache_capacity,
         cache_sizer=cache_sizer,
+        cache_key_mode=args.cache_key_mode,
     )
     server.edges_path = str(edge_path)
 
