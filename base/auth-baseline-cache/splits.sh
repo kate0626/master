@@ -243,7 +243,7 @@ set -euo pipefail
 ############################################################
 
 # ====== 設定 ======
-TIMEOUT=300               # 起動待ち全体の上限（長め）
+TIMEOUT=30000           # 起動待ち全体の上限（長め）
 HEALTH_RETRY=60          # /health の最大試行回数（1回=0.5sなら30秒）
 HEALTH_STABLE=2          # 連続OK回数（2回連続OKでREADY扱い）
 HEALTH_INTERVAL=1      # 何秒おきに叩くか
@@ -253,7 +253,7 @@ HEALTH_INTERVAL=1      # 何秒おきに叩くか
 
 
 # 次はアマゾンでやる、飲み変え前
-GRAPH=karate
+GRAPH=vldb
 EDGE_FILE="dataset/Louvain/graph/${GRAPH}.gr"
 REPO_DIR="./"
 # --- スクリプト自身の絶対パスを取得（zsh / bash どちらでも動く） ---
@@ -267,13 +267,13 @@ else
 fi
 SCRIPT_DIR="$(cd "$(dirname "${_SELF}")" && pwd -P)"
 unset _SELF
-RW_WALKS=1000
-ALPHA=0.1
+RW_WALKS=100
+ALPHA=0.01
 NG_RATE="0.3"
 START_NODES_LIST=(0 1 2 3 4)
 
 # ====== 全キャッシュポリシーを順番に試す ======
-CACHE_POLICIES=( "lru"  "arc"  "memo" "none" )
+CACHE_POLICIES=(  "none" )
 CACHE_CAPACITY=100
 
 # ====== サーバ定義 ======

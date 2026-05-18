@@ -1,0 +1,17 @@
++ python3 base/auth-many-server/create_json_table.py dataset/Louvain/graph/karate.gr --ng-ratio 0.3
+Wrote base/auth-many-server/karate/node_to_starts_0.3.json with 34 start entries (NG ratio=0.3).
+./base/auth-many-server/prepare_auth_data.sh: line 241: mapfile: command not found
++ python3 base/auth-many-server/create_json_table.py dataset/Louvain/graph/karate.gr --ng-ratio 0.3
+Wrote base/auth-many-server/karate/node_to_starts_0.3.json with 34 start entries (NG ratio=0.3).
+./base/auth-many-server/prepare_auth_data.sh: line 241: mapfile: command not found
+./base/auth-many-server/prepare_auth_data.sh: fork: Resource temporarily unavailable
+Edge file not found: dataset/Louvain/graph/karate　.gr
++ python3 base/auth-many-server/create_json_table.py dataset/Louvain/graph/karate.gr --ng-ratio 0.1
+Wrote base/auth-many-server/karate/node_to_starts_0.1.json with 34 start entries (NG ratio=0.1).
+./base/auth-many-server/prepare_auth_data.sh: line 241: mapfile: command not found
++ python3 base/auth-many-server/create_json_table.py dataset/Louvain/graph/cmu.gr --ng-ratio 0.1
+Wrote base/auth-many-server/cmu/node_to_starts_0.1.json with 10 start entries (NG ratio=0.1).
+./base/auth-many-server/prepare_auth_data.sh: line 241: mapfile: command not found
++ python3 base/auth-many-server/create_json_table.py dataset/Louvain/graph/cmu.gr --ng-ratio 0.1
+Wrote base/auth-many-server/cmu/node_to_starts_0.1.json with 10 start entries (NG ratio=0.1).
+base/auth-many-server/prepare_auth_data.sh: line 241: mapfile: command not found

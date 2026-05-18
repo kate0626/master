@@ -17,19 +17,14 @@ NG集合(deny)を生成しつつ、直接サーバごとの entity_to_denied_sta
     --starts "1-10"      # 1..10 を starts にする
     --starts "1,3,7"     # 指定ノードのみ
     --starts "all"       # グラフ中の全ノード（デフォルト）
-    
+
 背景：指定ノードを決めないと、爆発してしまう
+
+./base/auth-many-server/prepare_auth_data.sh --graph com-friendster     --ng-ratio 0.3     --server-count 2     --partitioner-type node-edge-fixed     --mode deny-direct    --starts "388990" > run.log 2>&1 &
 
 
 Usage:
-nohup python3 base/auth-many-server/create_json_table_auth_table.py \
-  --edges ./dataset/Louvain/graph/vldb.gr \
-  --ng-ratio 0.3 \
-  --seed 0 \
-  --server-count 2 \
-  --partitioner-type node-edge-fixed \
-  --starts "1-10" \
-  --out-dir base/auth-many-server/data/splits/vldb/0.3 > run.log 2>&1 &
+
 """
 
 from __future__ import annotations
@@ -205,7 +200,12 @@ def enforce_global_constraint_A(
         tbl = buckets[sid]
         # list() にしてループ中の変更に安全にする
         for entity, denied in list(tbl.items()):
-            if denied and frozenset(denied) == all_starts_frozen:
+            # if denied and frozenset(denied) == all_starts_frozen:
+            if (
+                denied
+                and frozenset(denied) == all_starts_frozen
+                and len(all_starts) > 1
+            ):
                 # 1つだけ許可に戻す（denyから削除）
                 keep_allowed = rng.choice(tuple(all_starts))
                 denied.discard(keep_allowed)
