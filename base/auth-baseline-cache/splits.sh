@@ -273,7 +273,9 @@ NG_RATE="0.3"
 START_NODES_LIST=(0 1 2 3 4)
 
 # ====== 全キャッシュポリシーを順番に試す ======
-CACHE_POLICIES=(  "none" )
+# CACHE_POLICIES=(  "none" )
+CACHE_POLICIES=("arc")
+# "memo" "lru" 
 CACHE_CAPACITY=100
 
 # ====== サーバ定義 ======
@@ -410,7 +412,7 @@ run_one_policy() {
   --edges ${EDGE_FILE} \
   --server-endpoints ${SERVER_ENDPOINTS_STR} \
   --owned-hints-only \
-  --request-timeout 120 \
+  --request-timeout 30000 \
   --cache-policy ${CACHE_POLICY} \
   --cache-capacity ${CACHE_CAPACITY}"
 
@@ -459,7 +461,7 @@ run_one_policy() {
         --walks ${RW_WALKS} \
         --alpha ${ALPHA} \
         --seed 42 \
-        --request-timeout 120 \
+        --request-timeout 30000 \
         --out-dir "${LOG_DIR}" \
         --cache-policy "${CACHE_POLICY}" \
         --cache-capacity "${CACHE_CAPACITY}"

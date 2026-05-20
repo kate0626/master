@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+
+# 大規模データを作成したい時
 # auth-many-server 用の前処理を 1 本にまとめたラッパー。
   # ./base/auth-many-server/prepare_auth_data.sh \
   #   --graph com-friendster \

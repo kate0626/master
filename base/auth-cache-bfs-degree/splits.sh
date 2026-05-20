@@ -21,19 +21,19 @@ unset _SELF
 GRAPH=vldb
 EDGE_FILE="dataset/Louvain/graph/${GRAPH}.gr"
 REPO_DIR="./"
-RW_WALKS=100
+RW_WALKS=1000
 ALPHA=0.01
 NG_RATE="0.3"
 START_NODES_LIST=(0 1 2 3 4)
 
 CACHE_CAPACITY=100
-BFS_FAR_THRESHOLD_LIST=(2 3 4 5)   # bfs-lru/hybrid-lru: sweep する far 閾値
+BFS_FAR_THRESHOLD_LIST=(6)   # bfs-lru/hybrid-lru: sweep する far 閾値
 BFS_PREFETCH_DEPTH_LIST=(2)  # bfs-lru/hybrid-lru: sweep するプリフェッチ深さ
 HUB_THRESHOLD=10                 # degree-lru: ハブ判定の次数閾値
 
 # 比較対象ポリシーをまとめて実行する
-CACHE_POLICIES=("bfs-lru")
-# CACHE_POLICIES=("hybrid-lru" "bfs-lru" "degree-lru" "lru" "none")
+# CACHE_POLICIES=("bfs-lru")
+CACHE_POLICIES=("hybrid-lru" "bfs-lru" "degree-lru" "lru" "none")
 
 
 HEALTH_RETRY=60

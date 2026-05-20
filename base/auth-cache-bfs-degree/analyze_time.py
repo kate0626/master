@@ -64,22 +64,42 @@ def parse_summary_log(path: Path) -> dict:
 
 
 def parse_log_sum(log_path: Path) -> dict:
-    """*.log から Total authorization/walk time 行を集計する。"""
-    auth_total = 0.0
-    ctrl_total = 0.0
-    pat_auth = re.compile(
-        r"Total authorization time \(sum over all servers\):\s+([\d.]+)"
-    )
-    pat_ctrl = re.compile(r"Total walk time \(sum over all servers\):\s+([\d.]+)")
+    """*.log から Total authorization/walk time 行を集計する。
+    walk_time < 1s のスタートノード（Avg length=1.0 の外れ値）は除外し、
+    有効なスタートノード数で割った平均を返す。
+    """
+    pat_start = re.compile(r"\[START_NODE\]")
+    pat_auth  = re.compile(r"Total authorization time \(sum over all servers\):\s+([\d.]+)")
+    pat_ctrl  = re.compile(r"Total walk time \(sum over all servers\):\s+([\d.]+)")
+
+    # スタートノードごとに (ctrl, auth) を収集
+    runs: list[tuple[float, float]] = []
+    cur_ctrl = cur_auth = None
+
     with open(log_path) as f:
         for line in f:
-            m = pat_auth.search(line)
-            if m:
-                auth_total += float(m.group(1))
+            if pat_start.search(line):
+                if cur_ctrl is not None:
+                    runs.append((cur_ctrl, cur_auth or 0.0))
+                cur_ctrl = cur_auth = None
+                continue
             m = pat_ctrl.search(line)
-            if m:
-                ctrl_total += float(m.group(1))
-    return {"ctrl": ctrl_total, "auth": auth_total} if auth_total > 0 else {}
+            if m and cur_ctrl is None:
+                cur_ctrl = float(m.group(1))
+            m = pat_auth.search(line)
+            if m and cur_auth is None:
+                cur_auth = float(m.group(1))
+
+    if cur_ctrl is not None:
+        runs.append((cur_ctrl, cur_auth or 0.0))
+
+    # walk_time >= 1s のスタートノードのみ使用
+    valid = [(c, a) for c, a in runs if c >= 1.0]
+    if not valid:
+        return {}
+
+    n = len(valid)
+    return {"ctrl": sum(c for c, _ in valid), "auth": sum(a for _, a in valid), "n": n}
 
 
 def _baseline_graph_name(graph: str) -> str:
@@ -104,6 +124,14 @@ def _baseline_graph_name(graph: str) -> str:
                 return candidate.name
 
     return stripped
+
+
+def _find_local_policy_data(graph: str, policy: str) -> dict | None:
+    """同じ実験結果の base/<policy>_100/<graph>.log からデータを取得する。"""
+    log_path = BFS_DEGREE_RESULTS / graph / "base" / f"{policy}_100" / f"{graph}.log"
+    if log_path.exists():
+        return parse_log_sum(log_path)
+    return None
 
 
 def _find_baseline_policy_data(graph: str, policy: str) -> dict | None:
@@ -150,28 +178,35 @@ def plot_graph(graph: str, data: dict, out_dir: Path) -> None:
         if policy in resolved:
             from_baseline[policy] = False
         else:
-            bl = _find_baseline_policy_data(graph, policy)
-            if bl:
-                resolved[policy] = bl
-                from_baseline[policy] = True
+            local = _find_local_policy_data(graph, policy)
+            if local:
+                resolved[policy] = local
+                from_baseline[policy] = False
+            else:
+                bl = _find_baseline_policy_data(graph, policy)
+                if bl:
+                    resolved[policy] = bl
+                    from_baseline[policy] = True
 
     # memo は常に baseline から取得（bfs-degree では実行しない）
     memo_data = _find_baseline_policy_data(graph, "memo")
     if memo_data:
         from_baseline["memo"] = True
 
+    def _per(d: dict) -> float:
+        """合計値を有効スタートノード数で割って1ノードあたりの平均を返す。"""
+        return d["ctrl"] / d.get("n", NUM_START_NODES)
+
     policies = [p for p in POLICY_ORDER if p in resolved]
-    memo_per = memo_data["auth"] / NUM_START_NODES if memo_data else None
+    memo_per = _per(memo_data) if memo_data else None
 
     # memo を末尾の棒として追加
     all_labels = policies + (["memo"] if memo_per is not None else [])
-    all_values = [resolved[p]["auth"] / NUM_START_NODES for p in policies]
+    all_values = [_per(resolved[p]) for p in policies]
     if memo_per is not None:
         all_values.append(memo_per)
 
-    none_per = (
-        resolved["none"]["auth"] / NUM_START_NODES if "none" in resolved else None
-    )
+    none_per = _per(resolved["none"]) if "none" in resolved else None
 
     fig = plt.figure(figsize=(8, 7.5))
     gs = fig.add_gridspec(2, 1, height_ratios=[3, 1.2], hspace=0.45)
@@ -249,7 +284,7 @@ def plot_graph(graph: str, data: dict, out_dir: Path) -> None:
         f"{lbl}(b)" if from_baseline.get(lbl, False) else lbl for lbl in all_labels
     ]
     ax.set_xticklabels(tick_labels, rotation=30, ha="right", fontsize=9.5)
-    ax.set_ylabel("Auth time / start_node (s)", fontsize=9.5)
+    ax.set_ylabel("Walk time / start_node (s)", fontsize=9.5)
     ax.yaxis.grid(True, linestyle="--", alpha=0.35, color="#cccccc")
     ax.set_axisbelow(True)
     ax.spines["top"].set_visible(False)
@@ -280,7 +315,7 @@ def plot_graph(graph: str, data: dict, out_dir: Path) -> None:
         for p in policies:
             if p == "none":
                 continue
-            p_per = resolved[p]["auth"] / NUM_START_NODES
+            p_per = _per(resolved[p])
             p_red = (none_per - p_per) / none_per * 100
             gap = (p_per - memo_per) / memo_per * 100
             b_mark = "(b)" if from_baseline.get(p, False) else "   "
@@ -289,7 +324,7 @@ def plot_graph(graph: str, data: dict, out_dir: Path) -> None:
                 f"vs none:{'v' if p_red>0 else '^'}{abs(p_red):.1f}%   "
                 f"vs memo:{'+' if gap>0 else ''}{gap:.1f}%"
             )
-    elif memo_per:
+    elif memo_per and not none_per:
         lines.append(f"[baseline memo(b)] {memo_per:.2f}s  (no 'none' data to compare)")
     else:
         lines.append("(no baseline memo data)")
@@ -313,7 +348,7 @@ def plot_graph(graph: str, data: dict, out_dir: Path) -> None:
     )
 
     fig.suptitle(
-        "Cache Strategy — Authorization Time\n"
+        "Cache Strategy — Walk Time\n"
         "(auth-cache-bfs-degree, a=0.01, walks=100, cap=100)",
         fontsize=11,
         y=1.01,
@@ -331,19 +366,29 @@ def plot_graph(graph: str, data: dict, out_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def main():
-    graphs = sorted(
-        [
-            p.name
-            for p in BFS_DEGREE_RESULTS.iterdir()
-            if p.is_dir() and (p / "all_policies_summary.log").exists()
-        ]
-    )
+def _find_summary_log(graph_dir: Path) -> Path | None:
+    """サマリーログをフラット配置 or base/ サブディレクトリから探す。"""
+    direct = graph_dir / "all_policies_summary.log"
+    if direct.exists():
+        return direct
+    nested = graph_dir / "base" / "all_policies_summary.log"
+    if nested.exists():
+        return nested
+    return None
 
-    for graph in graphs:
-        data = parse_summary_log(
-            BFS_DEGREE_RESULTS / graph / "all_policies_summary.log"
-        )
+
+def main():
+    entries = []
+    for p in BFS_DEGREE_RESULTS.iterdir():
+        if not p.is_dir():
+            continue
+        summary = _find_summary_log(p)
+        if summary:
+            entries.append((p.name, summary))
+    entries.sort()
+
+    for graph, summary_path in entries:
+        data = parse_summary_log(summary_path)
         plot_graph(graph, data, BFS_DEGREE_RESULTS)
 
 
