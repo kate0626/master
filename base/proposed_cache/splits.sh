@@ -5,6 +5,13 @@ set -euo pipefail
 #  Remote server が "READY" になってから controller を実行する版
 #  -- 全キャッシュポリシーを順番に回す版 --
 # baseディレクトリから実行する必要あり
+
+
+# # ローカルから (リモートサーバ ab06, ab11 に SSH 接続して並列実行)
+# cd /Users/maiko/Documents/GitHub/master-progrem
+# GRAPH_OVERRIDE=amazon0601 zsh base/proposed_cache/splits_proposed.sh
+# # Amazon0601 が終わったら
+# GRAPH_OVERRIDE=vldb zsh base/proposed_cache/splits_proposed.sh
 ############################################################
 
 # ====== 設定 ======
@@ -17,8 +24,9 @@ HEALTH_INTERVAL=1      # 何秒おきに叩くか
 # karate, amazon0601, vldb はOK
 
 
-# 次はアマゾンでやる、飲み変え前
-GRAPH=vldb
+# 提案手法 (bfs_prefetch / bfs_score) を含む比較実験
+# ★ 対象グラフはここを書き換える (amazon0601 / vldb / karate など)
+GRAPH=amazon0601
 EDGE_FILE="dataset/Louvain/graph/${GRAPH}.gr"
 REPO_DIR="./"
 # --- スクリプト自身の絶対パスを取得（zsh / bash どちらでも動く） ---
@@ -38,11 +46,23 @@ NG_RATE="0.3"
 START_NODES_LIST=(0 1 2 3 4)
 
 # ====== 全キャッシュポリシーを順番に試す ======
-# CACHE_POLICIES=(  "none" )
-CACHE_POLICIES=("memo" "lru" "arc" )  # "arc" を追加
-# "memo" "lru" 
-# "none" "memo" "lru" 
+# 既存ポリシー (none/memo/lru/arc) と提案ポリシー (bfs_prefetch/bfs_score) を比較
+CACHE_POLICIES=("bfs_prefetch" "bfs_score")
 CACHE_CAPACITY=100
+
+# 提案手法のパラメータ
+# ※ node-edge 二部グラフのため BFS K は「実グラフ距離 × 2」になる
+#   K=4 → 実 2 hops, K=6 → 実 3 hops 程度
+#   K=10 は密グラフで爆発するので 4-6 を推奨
+PREFETCH_K=4               # bfs_prefetch: BFS K-hop 範囲 (二部グラフ補正後の実 hop = K/2)
+PREFETCH_CAPACITY=100      # bfs_score: 上位 N (LRU と公平比較)
+PREFETCH_DECAY=0.7         # bfs_score: 距離減衰率 γ (manual モード時に使用)
+PREFETCH_DECAY_MODE=data_fit  # γ 決定モード: manual | data_fit
+                              #   manual:   PREFETCH_DECAY を使う
+                              #   data_fit: baseline JSON の BFS距離別 attempts 分布から自動推定
+
+# 既存 baseline 実験の出力 (bfs_score の頻度ヒントとして使う)
+ATTEMPTS_HINT_DIR="${REPO_DIR}base/auth-baseline-cache/results/alpha${ALPHA}_walks_${RW_WALKS}_capa_${CACHE_CAPACITY}/${GRAPH}/none_100"
 
 # ====== サーバ定義 ======
 ## TODO: グラフはここで参照
@@ -70,7 +90,7 @@ cleanup() {
   echo ">>> [CLEANUP] 全サーバ停止中..."
   for entry in "${SERVERS[@]}"; do
     eval "$entry"
-    ssh -o ConnectTimeout=300 "$host" "pkill -f base/auth-baseline-cache/split_remote_server_volume_base.py || true" >/dev/null 2>&1 || true
+    ssh -o ConnectTimeout=300 "$host" "pkill -f base/proposed_cache/split_remote_server_proposed.py || true" >/dev/null 2>&1 || true
   done
   echo ">>> [CLEANUP] 完了。"
 }
@@ -159,7 +179,14 @@ wait_health() {
 run_one_policy() {
   local CACHE_POLICY="$1"
 
-  local LOG_DIR="${SCRIPT_DIR}/results/${GRAPH}/${CACHE_POLICY}_${CACHE_CAPACITY}"
+  # 提案手法では K / N もディレクトリ名に含める
+  local POLICY_TAG="${CACHE_POLICY}_${CACHE_CAPACITY}"
+  if [[ "${CACHE_POLICY}" == "bfs_prefetch" ]]; then
+    POLICY_TAG="${CACHE_POLICY}_K${PREFETCH_K}"
+  elif [[ "${CACHE_POLICY}" == "bfs_score" ]]; then
+    POLICY_TAG="${CACHE_POLICY}_N${PREFETCH_CAPACITY}_d${PREFETCH_DECAY}"
+  fi
+  local LOG_DIR="${SCRIPT_DIR}/results/alpha${ALPHA}_walks_${RW_WALKS}_capa_${CACHE_CAPACITY}/${GRAPH}/${POLICY_TAG}"
   mkdir -p "${LOG_DIR}"
   local LOG_FILE="${LOG_DIR}/${GRAPH}.log"
   : > "${LOG_FILE}"
@@ -173,7 +200,7 @@ run_one_policy() {
     echo "## [TIME ] $(date '+%Y-%m-%d %H:%M:%S')"
     echo "############################################################"
 
-    local REMOTE_CMD_BASE="python3 base/auth-baseline-cache/split_remote_server_volume_base.py \
+    local REMOTE_CMD_BASE="python3 base/proposed_cache/split_remote_server_proposed.py \
   --server-count ${SERVER_COUNT} \
   --edges ${EDGE_FILE} \
   --server-endpoints ${SERVER_ENDPOINTS_STR} \
@@ -186,7 +213,7 @@ run_one_policy() {
     echo ">>> [PRE-CLEANUP] 既存サーバプロセスを停止..."
     for entry in "${SERVERS[@]}"; do
       eval "$entry"
-      ssh -o ConnectTimeout=30 "$host" "pkill -f base/auth-baseline-cache/split_remote_server_volume_base.py || true" >/dev/null 2>&1 || true
+      ssh -o ConnectTimeout=30 "$host" "pkill -f base/proposed_cache/split_remote_server_proposed.py || true" >/dev/null 2>&1 || true
     done
     sleep 2
 
@@ -217,10 +244,26 @@ run_one_policy() {
 
     echo "[INFO] 全サーバ起動確認OK。controller を開始します。 (policy=${CACHE_POLICY})"
 
+    # 提案手法の prefetch 引数を決定 (zsh で正しく word-split するため配列で構築)
+    PREFETCH_ARGS=()
+    if [[ "${CACHE_POLICY}" == "bfs_prefetch" ]]; then
+      PREFETCH_ARGS=(--prefetch-mode bfs_prefetch --prefetch-k "${PREFETCH_K}")
+    elif [[ "${CACHE_POLICY}" == "bfs_score" ]]; then
+      PREFETCH_ARGS=(
+        --prefetch-mode bfs_score
+        --prefetch-capacity "${PREFETCH_CAPACITY}"
+        --prefetch-decay "${PREFETCH_DECAY}"
+        --prefetch-decay-mode "${PREFETCH_DECAY_MODE}"
+      )
+      if [[ -d "${ATTEMPTS_HINT_DIR}" ]]; then
+        PREFETCH_ARGS+=(--prefetch-attempts-source "${ATTEMPTS_HINT_DIR}")
+      fi
+    fi
+
     # ====== controller 実行 ======
     for start_node in "${START_NODES_LIST[@]}"; do
       echo "=== [START_NODE] ${start_node} (policy=${CACHE_POLICY}) ==="
-      python3 base/auth-baseline-cache/split_controller.py \
+      python3 base/proposed_cache/split_controller_proposed.py \
         --servers 2 \
         --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
         --start-node "${start_node}" \
@@ -230,7 +273,8 @@ run_one_policy() {
         --request-timeout 30000 \
         --out-dir "${LOG_DIR}" \
         --cache-policy "${CACHE_POLICY}" \
-        --cache-capacity "${CACHE_CAPACITY}"
+        --cache-capacity "${CACHE_CAPACITY}" \
+        "${PREFETCH_ARGS[@]}"
     done
 
     echo "[DONE policy=${CACHE_POLICY}]"
@@ -289,7 +333,7 @@ run_one_policy() {
     echo ">>> [POST-CLEANUP] policy=${CACHE_POLICY} のサーバを停止..."
     for entry in "${SERVERS[@]}"; do
       eval "$entry"
-      ssh -o ConnectTimeout=30 "$host" "pkill -f base/auth-baseline-cache/split_remote_server_volume_base.py || true" >/dev/null 2>&1 || true
+      ssh -o ConnectTimeout=30 "$host" "pkill -f base/proposed_cache/split_remote_server_proposed.py || true" >/dev/null 2>&1 || true
     done
     sleep 3
 
@@ -297,7 +341,7 @@ run_one_policy() {
 }
 
 # ====== 全ポリシーを順番に実行 ======
-SUMMARY_DIR="${SCRIPT_DIR}/results/${GRAPH}"
+SUMMARY_DIR="${SCRIPT_DIR}/results/alpha${ALPHA}_walks_${RW_WALKS}_capa_${CACHE_CAPACITY}/${GRAPH}"
 mkdir -p "${SUMMARY_DIR}"
 SUMMARY_FILE="${SUMMARY_DIR}/all_policies_summary.log"
 : > "${SUMMARY_FILE}"
@@ -320,7 +364,14 @@ for policy in "${CACHE_POLICIES[@]}"; do
   fi
 
   # サマリ収集（Length=1 / Traceback の start_node は除外したうえで集計し、n_valid で per-start 平均を計算する）
-  local_log="${SCRIPT_DIR}/results/${GRAPH}/${policy}_${CACHE_CAPACITY}/${GRAPH}.log"
+  # 提案手法用の POLICY_TAG をここでも構築
+  POLICY_TAG="${policy}_${CACHE_CAPACITY}"
+  if [[ "${policy}" == "bfs_prefetch" ]]; then
+    POLICY_TAG="${policy}_K${PREFETCH_K}"
+  elif [[ "${policy}" == "bfs_score" ]]; then
+    POLICY_TAG="${policy}_N${PREFETCH_CAPACITY}_d${PREFETCH_DECAY}"
+  fi
+  local_log="${SCRIPT_DIR}/results/alpha${ALPHA}_walks_${RW_WALKS}_capa_${CACHE_CAPACITY}/${GRAPH}/${POLICY_TAG}/${GRAPH}.log"
   if [[ -f "${local_log}" ]]; then
     agg=$(awk '
       BEGIN { sum_walk=0; sum_auth=0; n_valid=0; current_avg=-1 }

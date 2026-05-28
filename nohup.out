@@ -1,17 +1,207 @@
-+ python3 base/auth-many-server/create_json_table.py dataset/Louvain/graph/karate.gr --ng-ratio 0.3
-Wrote base/auth-many-server/karate/node_to_starts_0.3.json with 34 start entries (NG ratio=0.3).
-./base/auth-many-server/prepare_auth_data.sh: line 241: mapfile: command not found
-+ python3 base/auth-many-server/create_json_table.py dataset/Louvain/graph/karate.gr --ng-ratio 0.3
-Wrote base/auth-many-server/karate/node_to_starts_0.3.json with 34 start entries (NG ratio=0.3).
-./base/auth-many-server/prepare_auth_data.sh: line 241: mapfile: command not found
-./base/auth-many-server/prepare_auth_data.sh: fork: Resource temporarily unavailable
-Edge file not found: dataset/Louvain/graph/karate　.gr
-+ python3 base/auth-many-server/create_json_table.py dataset/Louvain/graph/karate.gr --ng-ratio 0.1
-Wrote base/auth-many-server/karate/node_to_starts_0.1.json with 34 start entries (NG ratio=0.1).
-./base/auth-many-server/prepare_auth_data.sh: line 241: mapfile: command not found
-+ python3 base/auth-many-server/create_json_table.py dataset/Louvain/graph/cmu.gr --ng-ratio 0.1
-Wrote base/auth-many-server/cmu/node_to_starts_0.1.json with 10 start entries (NG ratio=0.1).
-./base/auth-many-server/prepare_auth_data.sh: line 241: mapfile: command not found
-+ python3 base/auth-many-server/create_json_table.py dataset/Louvain/graph/cmu.gr --ng-ratio 0.1
-Wrote base/auth-many-server/cmu/node_to_starts_0.1.json with 10 start entries (NG ratio=0.1).
-base/auth-many-server/prepare_auth_data.sh: line 241: mapfile: command not found
+############################################################
+## [RUN ALL POLICIES] graph=vldb policies=none
+## [START] 2026-05-22 08:37:09
+############################################################
+
+============================================================
+==> RUNNING policy=none
+============================================================
+############################################################
+## [POLICY] none  capacity=100
+## [TIME ] 2026-05-22 08:37:09
+############################################################
+>>> [PRE-CLEANUP] 既存サーバプロセスを停止...
+=== [ab06] サーバ起動開始 (ID=0) ===
+=== [ab11] サーバ起動開始 (ID=1) ===
+[REMOTE] started pid=4135945 (log=base/auth-baseline-cache/split_remote_server.log)
+[WAIT] 10.58.60.6:3000: initial grace 5s...
+[REMOTE] started pid=1188959 (log=base/auth-baseline-cache/split_remote_server.log)
+[WAIT] 10.58.60.11:3000: initial grace 5s...
+[WAIT] 10.58.60.6:3000: health ok (1/2)
+[WAIT] 10.58.60.6:3000: health ok (2/2)
+[READY] 10.58.60.6:3000
+[WAIT] 10.58.60.11:3000: health ok (1/2)
+[WAIT] 10.58.60.11:3000: health ok (2/2)
+[READY] 10.58.60.11:3000
+[INFO] ab06: 起動ログ（末尾20行）
+[INFO] ab11: 起動ログ（末尾20行）
+[Server 1] OWNED entity counts: nodes=0, edges=873575, total=873575
+[Server 1] OWNED nodes sample: []
+[Server 1] OWNED edges sample: ['edge_0_101215', 'edge_0_120044', 'edge_0_123880', 'edge_0_124002', 'edge_0_2']
+Traceback (most recent call last):
+  File "base/auth-baseline-cache/split_remote_server_volume_base.py", line 2035, in <module>
+    main()
+  File "base/auth-baseline-cache/split_remote_server_volume_base.py", line 1956, in main
+    server = GraphShardServer(
+  File "base/auth-baseline-cache/split_remote_server_volume_base.py", line 1743, in __init__
+    super().__init__((host, port), EdgeAwareHandler)
+  File "/usr/lib/python3.8/socketserver.py", line 452, in __init__
+    self.server_bind()
+  File "/usr/lib/python3.8/http/server.py", line 138, in server_bind
+    socketserver.TCPServer.server_bind(self)
+  File "/usr/lib/python3.8/socketserver.py", line 466, in server_bind
+    self.socket.bind(self.server_address)
+OSError: [Errno 98] Address already in use
+[INFO] 全サーバ起動確認OK。controller を開始します。 (policy=none)
+=== [START_NODE] 0 (policy=none) ===
+[Controller] start_server=0, endpoint=10.58.60.6:3000
+[Controller] Resetting caches on all servers before walk...
+[Controller] Reset OK 10.58.60.6:3000: policy=none, capacity=100
+[Controller] Reset OK 10.58.60.11:3000: policy=bfs-lru, capacity=100
+Avg length: 2.570, total steps: 257
+[Controller] duration 27.256497s
+Server visit counts:
+  Server 0: 137
+  Server 1: 120
+
+[Controller] Collecting access statistics from all servers...
+[Controller] Merging stats from server 0 (10.58.60.6:3000)  actual_policy=none
+[Controller] Merging stats from server 1 (10.58.60.11:3000)  actual_policy=bfs-lru
+Total authorization time (sum over all servers): 0.766444 s
+Total authorization calls (sum over all servers): 273
+Total walk time (sum over all servers): 44.294223 s
+Total walk calls (sum over all servers): 199
+Average authorization time per call: 2.807 ms (calls=273)
+Total auth cache lookups: 270
+Auth cache hit: 0, miss: 270, hit_rate: 0.000
+[Controller] Saved aggregated transition stats to /Users/maiko/Documents/GitHub/master-progrem/base/auth-baseline-cache/results/vldb/none_100/start=0_walks=100_alpha=0.01_seed=42_cache=none_cap=100_global_transition.json
+[Controller] Saved memory summary to /Users/maiko/Documents/GitHub/master-progrem/base/auth-baseline-cache/results/vldb/none_100/start=0_walks=100_alpha=0.01_seed=42_cache=none_cap=100_memory_summary.json
+=== [START_NODE] 1 (policy=none) ===
+[Controller] start_server=0, endpoint=10.58.60.6:3000
+[Controller] Resetting caches on all servers before walk...
+[Controller] Reset OK 10.58.60.6:3000: policy=none, capacity=100
+[Controller] Reset OK 10.58.60.11:3000: policy=bfs-lru, capacity=100
+Avg length: 2.030, total steps: 203
+[Controller] duration 30.833191s
+Server visit counts:
+  Server 0: 103
+  Server 1: 100
+
+[Controller] Collecting access statistics from all servers...
+[Controller] Merging stats from server 0 (10.58.60.6:3000)  actual_policy=none
+[Controller] Merging stats from server 1 (10.58.60.11:3000)  actual_policy=bfs-lru
+Total authorization time (sum over all servers): 0.525460 s
+Total authorization calls (sum over all servers): 188
+Total walk time (sum over all servers): 45.017888 s
+Total walk calls (sum over all servers): 184
+Average authorization time per call: 2.795 ms (calls=188)
+Total auth cache lookups: 188
+Auth cache hit: 0, miss: 188, hit_rate: 0.000
+[Controller] Saved aggregated transition stats to /Users/maiko/Documents/GitHub/master-progrem/base/auth-baseline-cache/results/vldb/none_100/start=1_walks=100_alpha=0.01_seed=42_cache=none_cap=100_global_transition.json
+[Controller] Saved memory summary to /Users/maiko/Documents/GitHub/master-progrem/base/auth-baseline-cache/results/vldb/none_100/start=1_walks=100_alpha=0.01_seed=42_cache=none_cap=100_memory_summary.json
+=== [START_NODE] 2 (policy=none) ===
+[Controller] start_server=0, endpoint=10.58.60.6:3000
+[Controller] Resetting caches on all servers before walk...
+[Controller] Reset OK 10.58.60.6:3000: policy=none, capacity=100
+[Controller] Reset OK 10.58.60.11:3000: policy=bfs-lru, capacity=100
+Avg length: 2.170, total steps: 217
+[Controller] duration 37.268581s
+Server visit counts:
+  Server 0: 116
+  Server 1: 101
+
+[Controller] Collecting access statistics from all servers...
+[Controller] Merging stats from server 0 (10.58.60.6:3000)  actual_policy=none
+[Controller] Merging stats from server 1 (10.58.60.11:3000)  actual_policy=bfs-lru
+Total authorization time (sum over all servers): 0.567863 s
+Total authorization calls (sum over all servers): 222
+Total walk time (sum over all servers): 58.386053 s
+Total walk calls (sum over all servers): 194
+Average authorization time per call: 2.558 ms (calls=222)
+Total auth cache lookups: 220
+Auth cache hit: 0, miss: 220, hit_rate: 0.000
+[Controller] Saved aggregated transition stats to /Users/maiko/Documents/GitHub/master-progrem/base/auth-baseline-cache/results/vldb/none_100/start=2_walks=100_alpha=0.01_seed=42_cache=none_cap=100_global_transition.json
+[Controller] Saved memory summary to /Users/maiko/Documents/GitHub/master-progrem/base/auth-baseline-cache/results/vldb/none_100/start=2_walks=100_alpha=0.01_seed=42_cache=none_cap=100_memory_summary.json
+=== [START_NODE] 3 (policy=none) ===
+[Controller] start_server=0, endpoint=10.58.60.6:3000
+[Controller] Resetting caches on all servers before walk...
+[Controller] Reset OK 10.58.60.6:3000: policy=none, capacity=100
+[Controller] Reset OK 10.58.60.11:3000: policy=bfs-lru, capacity=100
+Avg length: 1.000, total steps: 100
+[Controller] duration 45.537905s
+Server visit counts:
+  Server 0: 100
+  Server 1: 0
+
+[Controller] Collecting access statistics from all servers...
+[Controller] Merging stats from server 0 (10.58.60.6:3000)  actual_policy=none
+[Controller] Merging stats from server 1 (10.58.60.11:3000)  actual_policy=bfs-lru
+Total authorization time (sum over all servers): 0.000000 s
+Total authorization calls (sum over all servers): 0
+Total walk time (sum over all servers): 81.418178 s
+Total walk calls (sum over all servers): 195
+No authorization calls recorded.
+No auth cache stats recorded.
+[Controller] Saved aggregated transition stats to /Users/maiko/Documents/GitHub/master-progrem/base/auth-baseline-cache/results/vldb/none_100/start=3_walks=100_alpha=0.01_seed=42_cache=none_cap=100_global_transition.json
+[Controller] Saved memory summary to /Users/maiko/Documents/GitHub/master-progrem/base/auth-baseline-cache/results/vldb/none_100/start=3_walks=100_alpha=0.01_seed=42_cache=none_cap=100_memory_summary.json
+=== [START_NODE] 4 (policy=none) ===
+[Controller] start_server=0, endpoint=10.58.60.6:3000
+[Controller] Resetting caches on all servers before walk...
+[Controller] Reset OK 10.58.60.6:3000: policy=none, capacity=100
+[Controller] Reset OK 10.58.60.11:3000: policy=bfs-lru, capacity=100
+Avg length: 1.990, total steps: 199
+[Controller] duration 5.356574s
+Server visit counts:
+  Server 0: 100
+  Server 1: 99
+
+[Controller] Collecting access statistics from all servers...
+[Controller] Merging stats from server 0 (10.58.60.6:3000)  actual_policy=none
+[Controller] Merging stats from server 1 (10.58.60.11:3000)  actual_policy=bfs-lru
+Total authorization time (sum over all servers): 2.561847 s
+Total authorization calls (sum over all servers): 99
+Total walk time (sum over all servers): 5.342216 s
+Total walk calls (sum over all servers): 100
+Average authorization time per call: 25.877 ms (calls=99)
+Total auth cache lookups: 99
+Auth cache hit: 0, miss: 99, hit_rate: 0.000
+[Controller] Saved aggregated transition stats to /Users/maiko/Documents/GitHub/master-progrem/base/auth-baseline-cache/results/vldb/none_100/start=4_walks=100_alpha=0.01_seed=42_cache=none_cap=100_global_transition.json
+[Controller] Saved memory summary to /Users/maiko/Documents/GitHub/master-progrem/base/auth-baseline-cache/results/vldb/none_100/start=4_walks=100_alpha=0.01_seed=42_cache=none_cap=100_memory_summary.json
+[DONE policy=none]
+[TOTAL policy=none] controller_duration_sum=263.224668s (n_valid=8)
+[TOTAL policy=none] authorization_time_sum=9.583904s (n_valid=8)
+[TOTAL policy=none] walk_time_per_start=32.903084s auth_time_per_start=1.197988s
+[MEMORY] saved: /Users/maiko/Documents/GitHub/master-progrem/base/auth-baseline-cache/results/vldb/none_100/vldb.memory.log
+>>> [POST-CLEANUP] policy=none のサーバを停止...
+[SUMMARY] policy=none controller_duration_sum=263.224668s authorization_time_sum=9.583904s n_valid=8 walk_per_start=32.903084s auth_per_start=1.197988s
+
+############################################################
+## [ALL DONE] 2026-05-22 09:14:31
+## [SUMMARY] /Users/maiko/Documents/GitHub/master-progrem/base/auth-baseline-cache/results/vldb/all_policies_summary.log
+############################################################
+[SUMMARY] policy=none controller_duration_sum=263.224668s authorization_time_sum=9.583904s n_valid=8 walk_per_start=32.903084s auth_per_start=1.197988s
+[SUMMARY] policy=none controller_duration_sum=263.224668s authorization_time_sum=9.583904s n_valid=8 walk_per_start=32.903084s auth_per_start=1.197988s
+>>> [CLEANUP] 全サーバ停止中...
+>>> [CLEANUP] 完了。
+############################################################
+## [RUN ALL POLICIES] graph=amazon0601 policies=bfs_prefetch bfs_score
+## [START] 2026-05-24 20:00:14
+############################################################
+
+============================================================
+==> RUNNING policy=bfs_prefetch
+============================================================
+############################################################
+## [POLICY] bfs_prefetch  capacity=100
+## [TIME ] 2026-05-24 20:00:14
+############################################################
+>>> [PRE-CLEANUP] 既存サーバプロセスを停止...
+=== [ab06] サーバ起動開始 (ID=0) ===
+=== [ab11] サーバ起動開始 (ID=1) ===
+[REMOTE] started pid=81461 (log=base/auth-baseline-cache/split_remote_server.log)
+[WAIT] 10.58.60.6:3000: initial grace 5s...
+[REMOTE] started pid=1360963 (log=base/auth-baseline-cache/split_remote_server.log)
+[WAIT] 10.58.60.11:3000: initial grace 5s...
+############################################################
+## [RUN ALL POLICIES] graph=amazon0601 policies=bfs_prefetch bfs_score
+## [START] 2026-05-24 20:19:45
+############################################################
+
+============================================================
+==> RUNNING policy=bfs_prefetch
+============================================================
+############################################################
+## [POLICY] bfs_prefetch  capacity=100
+## [TIME ] 2026-05-24 20:19:45
+############################################################
+>>> [PRE-CLEANUP] 既存サーバプロセスを停止...

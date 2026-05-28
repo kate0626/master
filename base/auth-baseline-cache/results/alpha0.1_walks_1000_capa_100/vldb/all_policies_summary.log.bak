@@ -1,0 +1,4 @@
+[SUMMARY] policy=lru controller_duration_sum=104.878085s authorization_time_sum=28.477578s
+[SUMMARY] policy=arc controller_duration_sum=103.504080s authorization_time_sum=26.514038s
+[SUMMARY] policy=memo controller_duration_sum=89.492070s authorization_time_sum=12.627269s
+[SUMMARY] policy=none controller_duration_sum=131.510672s authorization_time_sum=56.506352s

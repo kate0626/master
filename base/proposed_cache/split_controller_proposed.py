@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Optional, Set, Union
@@ -154,12 +153,45 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Cache capacity label to embed in output metadata/filenames.",
     )
+    # 提案手法用 prefetch パラメータ
     parser.add_argument(
-        "--log-interval",
+        "--prefetch-mode",
+        choices=["none", "bfs_prefetch", "bfs_score"],
+        default="none",
+        help="提案手法のプリフェッチモード。bfs_prefetch=BFS K-hop球, bfs_score=BFS×freq上位N",
+    )
+    parser.add_argument(
+        "--prefetch-k",
         type=int,
-        default=0,
-        help="If > 0, collect and log cache hit rate every N walks (learning curve). "
-             "0 = disabled (single batch, existing behavior).",
+        default=10,
+        help="bfs_prefetch の BFS 距離 K",
+    )
+    parser.add_argument(
+        "--prefetch-capacity",
+        type=int,
+        default=100,
+        help="bfs_score の上位 N (= cache 容量に相当)",
+    )
+    parser.add_argument(
+        "--prefetch-decay",
+        type=float,
+        default=0.7,
+        help="bfs_score の距離減衰率γ (manual モード時に使用)",
+    )
+    parser.add_argument(
+        "--prefetch-decay-mode",
+        choices=["manual", "data_fit"],
+        default="manual",
+        help="γ の決定モード。"
+        "manual=CLI 値を使う / "
+        "data_fit=baseline JSON の BFS 距離別 attempts 分布を指数フィットして γ を自動推定",
+    )
+    parser.add_argument(
+        "--prefetch-attempts-source",
+        type=str,
+        default=None,
+        help="bfs_score 用の頻度ヒント JSON (start_node ごとの attempts dict)。"
+        "data_fit モードでは BFS 距離推定にも使う。",
     )
     return parser.parse_args()
 
@@ -252,6 +284,208 @@ def reset_cache(endpoint: str, timeout: float) -> bool:
         return False
 
 
+def prefetch_cache(
+    endpoint: str,
+    mode: str,
+    start_node: int,
+    K: int,
+    capacity: int,
+    decay: float,
+    attempts: Optional[dict],
+    timeout: float,
+) -> Optional[dict]:
+    """提案手法: /cache/prefetch を呼ぶ。返り値に round_trip_sec (controller 側測定) を含む。"""
+    import time as _time
+
+    payload = {
+        "start_node": int(start_node),
+        "mode": mode,
+        "K": int(K),
+        "capacity": int(capacity),
+        "decay": float(decay),
+        "attempts": attempts or {},
+    }
+    t0 = _time.perf_counter()
+    try:
+        resp = post_json(endpoint, "/cache/prefetch", payload=payload, timeout=timeout)
+        rtt = _time.perf_counter() - t0
+        resp = dict(resp) if isinstance(resp, dict) else {"raw": resp}
+        resp["round_trip_sec"] = rtt  # controller 側で測定した端から端までの時間
+        resp["endpoint"] = endpoint
+        print(
+            f"[Controller] Prefetch OK {endpoint}: mode={resp.get('mode')} "
+            f"selected={resp.get('selected')} inserted={resp.get('inserted')} "
+            f"server_build={resp.get('build_time_sec', 0):.3f}s "
+            f"round_trip={rtt:.3f}s"
+        )
+        return resp
+    except Exception as e:
+        rtt = _time.perf_counter() - t0
+        print(
+            f"[Controller] *** PREFETCH FAILED {endpoint}: {e} "
+            f"(after {rtt:.3f}s) ***"
+        )
+        return {"endpoint": endpoint, "round_trip_sec": rtt, "error": str(e)}
+
+
+def _resolve_baseline_json(path: Optional[str], start_node: int) -> Optional[Path]:
+    """attempts hint パスを start_node ごとの JSON ファイルに解決する。
+    ディレクトリ指定なら start={N}_*.json を探す。"""
+    if not path:
+        return None
+    p = Path(path)
+    if p.is_dir():
+        cands = list(p.glob(f"start={start_node}_*_global_transition.json"))
+        if not cands:
+            return None
+        return cands[0]
+    return p if p.exists() else None
+
+
+def estimate_decay_from_baseline(path: Optional[str], start_node: int) -> Optional[float]:
+    """
+    baseline transition.json から BFS 距離別 attempts 分布を取り出し、
+    指数 log(attempts(d)) = log(A) + d * log(γ) で γ を推定する。
+
+    手順:
+      1. JSON 読み込み (`authorization_attempts`, `transition`)
+      2. `transition` の "src->edge_a_b" キーから無向隣接リストを構築
+      3. start_node から BFS で各ノードの距離 d を求める
+      4. 各 d について Σ attempts(v) を集計
+      5. log-空間で線形回帰 → 傾き = log(γ) を得る → γ を返す
+
+    返り値: 推定 γ (0,1) の値。失敗時 None。
+    """
+    import math
+    import re as _re
+    from collections import defaultdict, deque
+
+    jf = _resolve_baseline_json(path, start_node)
+    if jf is None:
+        print(f"[Controller] data_fit: baseline JSON not found ({path}, start={start_node})")
+        return None
+    try:
+        d = json.loads(jf.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"[Controller] data_fit: parse failed {jf}: {e}")
+        return None
+
+    attempts = d.get("authorization_attempts", {})
+    tr = d.get("transition", {})
+    if not attempts or not tr:
+        print(f"[Controller] data_fit: missing attempts/transition in {jf.name}")
+        return None
+
+    # 隣接リスト構築
+    edge_pat = _re.compile(r"^(.+?)->edge_(.+?)_(.+)$")
+    adj: Dict[str, Set[str]] = defaultdict(set)
+    for key in tr:
+        m = edge_pat.match(key)
+        if not m:
+            continue
+        src, a, b = m.group(1), m.group(2), m.group(3)
+        dst = b if src == a else a
+        adj[src].add(dst)
+        adj[dst].add(src)
+
+    # BFS from start_node
+    start = str(start_node)
+    if start not in adj and start not in attempts:
+        print(f"[Controller] data_fit: start_node {start} not in adjacency")
+        return None
+    dist: Dict[str, int] = {start: 0}
+    q = deque([start])
+    while q:
+        u = q.popleft()
+        for w in adj.get(u, ()):
+            if w not in dist:
+                dist[w] = dist[u] + 1
+                q.append(w)
+
+    # 距離別 attempts 合計
+    sum_by_d: Dict[int, int] = defaultdict(int)
+    for v, c in attempts.items():
+        v_str = str(v)
+        if v_str in dist:
+            sum_by_d[dist[v_str]] += int(c)
+
+    # 線形回帰 (log y vs x), d >= 1 のみ (start ノードは bias になる)
+    xs = []
+    ys = []
+    for d_, s in sum_by_d.items():
+        if d_ <= 0 or s <= 0:
+            continue
+        xs.append(d_)
+        ys.append(math.log(s))
+    if len(xs) < 3:
+        print(
+            f"[Controller] data_fit: too few BFS-distance buckets "
+            f"(start={start}, n={len(xs)})"
+        )
+        return None
+
+    n = len(xs)
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    den = sum((x - mean_x) ** 2 for x in xs)
+    if den == 0:
+        return None
+    slope = num / den  # = log(γ)
+    gamma = math.exp(slope)
+    # 安全範囲にクリップ (0,1) でないと意味なし
+    gamma = max(0.05, min(0.999, gamma))
+    print(
+        f"[Controller] data_fit: γ estimated = {gamma:.4f}  "
+        f"(n_buckets={n}, distances={sorted(sum_by_d.keys())[:5]}...)"
+    )
+    return gamma
+
+
+def load_attempts_hint(path: Optional[str], start_node: int) -> dict:
+    """bfs_score 用の頻度ヒントを JSON から読み込む。
+
+    対応フォーマット:
+      (A) 既存 baseline の transition.json (`authorization_attempts` キーを持つ)
+          → そのまま attempts dict を取り出す
+      (B) {"<start_node>": {"<entity>": count, ...}, ...}
+          → start_node 部分を取り出す
+      (C) {"<entity>": count, ...}
+          → そのまま使う
+
+    path がディレクトリの場合は start_node に対応する JSON を自動探索。
+      e.g.  start=0_walks=100_alpha=0.01_seed=42_cache=none_cap=100_global_transition.json
+    """
+    if not path:
+        return {}
+    p = Path(path)
+    # ディレクトリ指定なら start_node 用ファイルを探す
+    if p.is_dir():
+        cands = list(p.glob(f"start={start_node}_*_global_transition.json"))
+        if not cands:
+            print(f"[Controller] no attempts hint file for start={start_node} under {p}")
+            return {}
+        p = cands[0]
+    if not p.exists():
+        print(f"[Controller] attempts hint not found: {p} → 空で続行")
+        return {}
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"[Controller] attempts hint parse failed: {e}")
+        return {}
+    # (A) 既存 baseline の transition.json
+    if isinstance(d, dict) and "authorization_attempts" in d:
+        att = d.get("authorization_attempts", {})
+        return att if isinstance(att, dict) else {}
+    # (B) start_node ごとの dict
+    key = str(start_node)
+    if isinstance(d, dict) and key in d and isinstance(d[key], dict):
+        return d[key]
+    # (C) フラットな {entity: count}
+    return d if isinstance(d, dict) else {}
+
+
 def main() -> None:
     args = parse_arguments()
 
@@ -288,58 +522,107 @@ def main() -> None:
     for ep in args.server_endpoints:
         reset_cache(ep, timeout=args.request_timeout)
 
-    total_walks = int(args.walks)
-    log_interval = int(args.log_interval)
-    batch_size = log_interval if log_interval > 0 else total_walks
+    # 提案手法: /cache/prefetch を全サーバに呼ぶ
+    prefetch_metrics: dict = {
+        "mode": args.prefetch_mode,
+        "k": args.prefetch_k,
+        "capacity": args.prefetch_capacity,
+        "decay": args.prefetch_decay,
+        "decay_mode": args.prefetch_decay_mode,
+        "decay_effective": None,
+        "decay_source": None,
+        "per_server": [],
+        "wall_clock_sec": 0.0,
+        "server_build_sum_sec": 0.0,
+        "server_build_max_sec": 0.0,
+        "client_round_trip_sum_sec": 0.0,
+        "client_round_trip_max_sec": 0.0,
+        "total_inserted": 0,
+        "total_selected": 0,
+    }
+    if args.prefetch_mode in ("bfs_prefetch", "bfs_score"):
+        import time as _time
 
-    walks: list = []
-    duration_sum = 0.0
-    bfs_prefetch_time_total = 0.0
-    bfs_prefetch_nodes_total = 0
-    walk_start_ts = time.perf_counter()
-
-    for batch_start in range(0, total_walks, batch_size):
-        n_batch = min(batch_size, total_walks - batch_start)
-        batch_seed = (args.seed + batch_start) if args.seed is not None else None
-        batch_payload = {**payload, "walks": n_batch, "seed": batch_seed}
-
-        res = start_walk_on_server(endpoint, batch_payload, timeout=args.request_timeout)
-        walks.extend(res.get("walks", []))
-        batch_metrics = res.get("metrics", {})
-        duration_sum += float(batch_metrics.get("duration_sec", res.get("duration", 0)) or 0)
-        bfs_prefetch_time_total += float(batch_metrics.get("bfs_prefetch_time_sec", 0) or 0)
-        bfs_prefetch_nodes_total += int(batch_metrics.get("bfs_prefetch_nodes", 0) or 0)
-
-        if log_interval > 0:
-            # このバッチ終了時点での全サーバ累積統計を収集してINTERVALログを出力
-            cum_hit = cum_miss = 0
-            for ep in args.server_endpoints:
-                s = fetch_access_stats(ep, timeout=args.request_timeout)
-                if s:
-                    cum_hit  += int(s.get("auth_cache_hit",  0))
-                    cum_miss += int(s.get("auth_cache_miss", 0))
-            walks_done = batch_start + n_batch
-            rate = cum_hit / max(1, cum_hit + cum_miss)
-            elapsed = time.perf_counter() - walk_start_ts
-            print(
-                f"[INTERVAL] walks_done={walks_done}"
-                f"  cum_hit={cum_hit}  cum_miss={cum_miss}"
-                f"  hit_rate={rate:.3f}"
-                f"  elapsed={elapsed:.3f}s"
+        attempts_hint = load_attempts_hint(
+            args.prefetch_attempts_source, int(args.start_node)
+        )
+        # γ の決定モード
+        effective_decay = args.prefetch_decay
+        decay_source = "manual"
+        if args.prefetch_mode == "bfs_score" and args.prefetch_decay_mode == "data_fit":
+            est = estimate_decay_from_baseline(
+                args.prefetch_attempts_source, int(args.start_node)
             )
+            if est is not None:
+                effective_decay = est
+                decay_source = "data_fit"
+            else:
+                print(
+                    "[Controller] data_fit failed → fallback to manual γ="
+                    f"{args.prefetch_decay}"
+                )
+                decay_source = "manual (data_fit_fallback)"
+        prefetch_metrics["decay_effective"] = float(effective_decay)
+        prefetch_metrics["decay_source"] = decay_source
 
-    duration = duration_sum
+        print(
+            f"[Controller] Prefetch mode={args.prefetch_mode} "
+            f"K={args.prefetch_k} N={args.prefetch_capacity} "
+            f"γ={effective_decay:.4f} ({decay_source}) "
+            f"(attempts hint: {len(attempts_hint)} entries)"
+        )
+        # 全体のウォールクロック時間を計測 (controller 視点での prefetch 完了までの時間)
+        prefetch_start = _time.perf_counter()
+        per_server_results = []
+        for ep in args.server_endpoints:
+            res = prefetch_cache(
+                ep,
+                mode=args.prefetch_mode,
+                start_node=int(args.start_node),
+                K=args.prefetch_k,
+                capacity=args.prefetch_capacity,
+                decay=effective_decay,
+                attempts=attempts_hint,
+                timeout=args.request_timeout,
+            )
+            per_server_results.append(res or {"endpoint": ep})
+        prefetch_metrics["wall_clock_sec"] = _time.perf_counter() - prefetch_start
+        prefetch_metrics["per_server"] = per_server_results
+
+        # 集計
+        for r in per_server_results:
+            b = float(r.get("build_time_sec", 0.0) or 0.0)
+            rt = float(r.get("round_trip_sec", 0.0) or 0.0)
+            prefetch_metrics["server_build_sum_sec"] += b
+            prefetch_metrics["server_build_max_sec"] = max(
+                prefetch_metrics["server_build_max_sec"], b
+            )
+            prefetch_metrics["client_round_trip_sum_sec"] += rt
+            prefetch_metrics["client_round_trip_max_sec"] = max(
+                prefetch_metrics["client_round_trip_max_sec"], rt
+            )
+            prefetch_metrics["total_inserted"] += int(r.get("inserted", 0) or 0)
+            prefetch_metrics["total_selected"] += int(r.get("selected", 0) or 0)
+
+        print(
+            f"[Controller] Prefetch DONE: "
+            f"wall_clock={prefetch_metrics['wall_clock_sec']:.3f}s "
+            f"(server_build max={prefetch_metrics['server_build_max_sec']:.3f}s, "
+            f"sum={prefetch_metrics['server_build_sum_sec']:.3f}s) "
+            f"inserted_total={prefetch_metrics['total_inserted']}"
+        )
+
+    res = start_walk_on_server(endpoint, payload, timeout=args.request_timeout)
+
+    walks = res.get("walks", [])
+    metrics = res.get("metrics", {})
+    duration = metrics.get("duration_sec", res.get("duration"))
 
     total_steps = sum(len(w.get("path", [])) for w in walks)
     avg_len = total_steps / max(1, len(walks))
     print(f"Avg length: {avg_len:.3f}, total steps: {total_steps}")
-    if duration:
+    if duration is not None:
         print(f"[Controller] duration {float(duration):.6f}s")
-    if bfs_prefetch_time_total > 0:
-        print(
-            f"[BFS_PREFETCH] time={bfs_prefetch_time_total:.6f}s"
-            f"  nodes_cached={bfs_prefetch_nodes_total}"
-        )
 
     # サーバー訪問回数のカウント
     server_visits = defaultdict(int)
@@ -364,11 +647,7 @@ def main() -> None:
     total_walk_calls = 0
     total_cache_hit = 0
     total_cache_miss = 0
-    total_cache_size = 0
-    total_hit_prefetched = 0
-    total_miss_prefetched = 0
-    total_hit_not_prefetched = 0
-    total_miss_not_prefetched = 0
+    total_cache_size = 0  # これは合計/平均どっちでもOK
 
     per_server_stats: list[dict] = []
 
@@ -398,15 +677,27 @@ def main() -> None:
         total_cache_hit += int(stats.get("auth_cache_hit", 0))
         total_cache_miss += int(stats.get("auth_cache_miss", 0))
         total_cache_size += int(stats.get("auth_cache_size", 0))
-        total_hit_prefetched     += int(stats.get("auth_cache_hit_prefetched", 0))
-        total_miss_prefetched    += int(stats.get("auth_cache_miss_prefetched", 0))
-        total_hit_not_prefetched += int(stats.get("auth_cache_hit_not_prefetched", 0))
-        total_miss_not_prefetched+= int(stats.get("auth_cache_miss_not_prefetched", 0))
 
     print(f"Total authorization time (sum over all servers): {total_auth_time:.6f} s")
     print(f"Total authorization calls (sum over all servers): {total_auth_calls}")
     print(f"Total walk time (sum over all servers): {total_walk_time:.6f} s")
     print(f"Total walk calls (sum over all servers): {total_walk_calls}")
+
+    # 提案手法時: prefetch 時間も明示し、合計 (prefetch + walk) を出力
+    if args.prefetch_mode in ("bfs_prefetch", "bfs_score"):
+        pf_wc = prefetch_metrics["wall_clock_sec"]
+        pf_build_max = prefetch_metrics["server_build_max_sec"]
+        pf_build_sum = prefetch_metrics["server_build_sum_sec"]
+        print(
+            f"Prefetch wall_clock (controller view): {pf_wc:.6f} s "
+            f"(server BFS+auth max={pf_build_max:.3f}s, sum={pf_build_sum:.3f}s)"
+        )
+        # ベンチマーク的な合計時間 (walk_time は sum なのでサーバ並列を考慮しない素直な値)
+        total_with_prefetch = pf_wc + total_walk_time
+        print(
+            f"Total time including prefetch: {total_with_prefetch:.6f} s "
+            f"(= prefetch {pf_wc:.3f}s + walk_sum {total_walk_time:.3f}s)"
+        )
 
     if total_auth_calls > 0:
         avg_ms = (total_auth_time / total_auth_calls) * 1000.0
@@ -435,20 +726,6 @@ def main() -> None:
         print(
             f"Auth cache hit: {total_cache_hit}, miss: {total_cache_miss}, hit_rate: {hit_rate:.3f}"
         )
-        # BFS 学習済み / 未学習 / 全体 の3種ヒット率を比較出力
-        def _rate(h: int, m: int) -> str:
-            return f"{h/(h+m):.3f}" if (h + m) > 0 else "N/A"
-        pre_rate  = _rate(total_hit_prefetched,     total_miss_prefetched)
-        nopre_rate= _rate(total_hit_not_prefetched, total_miss_not_prefetched)
-        if total_hit_prefetched + total_miss_prefetched > 0:
-            print(
-                f"Auth cache hit_rate [BFS-prefetched nodes]    : {pre_rate}"
-                f"  (hit={total_hit_prefetched}, miss={total_miss_prefetched})"
-            )
-            print(
-                f"Auth cache hit_rate [non-prefetched nodes]    : {nopre_rate}"
-                f"  (hit={total_hit_not_prefetched}, miss={total_miss_not_prefetched})"
-            )
     else:
         print("No auth cache stats recorded.")
 
@@ -494,7 +771,15 @@ def main() -> None:
             "server_endpoints": list(args.server_endpoints),
             "cache_policy": str(args.cache_policy),
             "cache_capacity": args.cache_capacity,
+            # 提案手法用 メタデータ
+            "prefetch_mode": str(args.prefetch_mode),
+            "prefetch_k": int(args.prefetch_k),
+            "prefetch_capacity": int(args.prefetch_capacity),
+            "prefetch_decay": float(args.prefetch_decay),
+            "prefetch_decay_mode": str(args.prefetch_decay_mode),
         },
+        # 提案手法 prefetch の時間計測
+        "prefetch_metrics": prefetch_metrics,
         # ★追加：サーバごとの /access_stats 生データ（memory含む）
         "per_server_access_stats": per_server_stats,
         "cache hit": total_cache_hit,

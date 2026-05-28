@@ -18,22 +18,22 @@ SCRIPT_DIR="$(cd "$(dirname "${_SELF}")" && pwd -P)"
 unset _SELF
 
 # ====== 設定 ======
-GRAPH=vldb
+GRAPH=amazon0601
 EDGE_FILE="dataset/Louvain/graph/${GRAPH}.gr"
 REPO_DIR="./"
-RW_WALKS=1000
+RW_WALKS=100
 ALPHA=0.01
 NG_RATE="0.3"
 START_NODES_LIST=(0 1 2 3 4)
 
 CACHE_CAPACITY=100
-BFS_FAR_THRESHOLD_LIST=(6)   # bfs-lru/hybrid-lru: sweep する far 閾値
-BFS_PREFETCH_DEPTH_LIST=(2)  # bfs-lru/hybrid-lru: sweep するプリフェッチ深さ
+BFS_FAR_THRESHOLD_LIST=(3 4 5 6)   # bfs-lru/hybrid-lru: sweep する far 閾値
+BFS_PREFETCH_DEPTH_LIST=(1 2)  # bfs-lru/hybrid-lru: sweep するプリフェッチ深さ
 HUB_THRESHOLD=10                 # degree-lru: ハブ判定の次数閾値
 
 # 比較対象ポリシーをまとめて実行する
-# CACHE_POLICIES=("bfs-lru")
-CACHE_POLICIES=("hybrid-lru" "bfs-lru" "degree-lru" "lru" "none")
+CACHE_POLICIES=("bfs-lru")
+# CACHE_POLICIES=("hybrid-lru" "bfs-lru" "degree-lru" "lru" "none")
 
 
 HEALTH_RETRY=60
@@ -240,6 +240,9 @@ run_one_policy() {
 
 # ====== 実行 + サマリ書き込みをまとめたヘルパー ======
 # 引数: policy [far depth]
+#
+# 集計は Length=1（avg_length <= 1.001）と Traceback で stats が無い start_node を除外する。
+# n_valid_starts も書き出すので、後段で per-start 平均を取れる。
 run_and_summarize() {
   local policy="$1"
   local far="${2:-}"
@@ -261,10 +264,32 @@ run_and_summarize() {
 
   local local_log="${RESULTS_BASE}/${policy}${param_tag}_${CACHE_CAPACITY}/${GRAPH}.log"
   if [[ -f "${local_log}" ]]; then
-    local ctrl auth
-    ctrl=$(awk '/Total walk time \(sum over all servers\):/ { sum += $(NF-1) } END { printf "%.6f", sum }' "${local_log}")
-    auth=$(awk '/Total authorization time \(sum over all servers\):/ { sum += $(NF-1) } END { printf "%.6f", sum }' "${local_log}")
-    echo "[SUMMARY] policy=${label} controller_duration_sum=${ctrl}s authorization_time_sum=${auth}s" \
+    local agg
+    agg=$(awk '
+      BEGIN { sum_walk=0; sum_auth=0; n_valid=0; current_avg=-1 }
+      /=== \[START_NODE\]/ { current_avg=-1 }
+      /Avg length:/ {
+        if (match($0, /Avg length:[[:space:]]+[0-9.]+/)) {
+          chunk = substr($0, RSTART, RLENGTH)
+          sub(/Avg length:[[:space:]]+/, "", chunk)
+          current_avg = chunk + 0
+        }
+      }
+      /Total authorization time \(sum over all servers\):/ { if (current_avg > 1.001) sum_auth += $(NF-1) }
+      /Total walk time \(sum over all servers\):/ { if (current_avg > 1.001) { sum_walk += $(NF-1); n_valid++ } }
+      END { printf "%.6f %.6f %d", sum_walk, sum_auth, n_valid }
+    ' "${local_log}")
+    local ctrl=${agg%% *}
+    local auth=$(echo "${agg}" | awk '{print $2}')
+    local nval=$(echo "${agg}" | awk '{print $3}')
+    local per_w per_a
+    if [[ "${nval}" -gt 0 ]]; then
+      per_w=$(awk -v s="${ctrl}" -v n="${nval}" 'BEGIN{printf "%.6f", s/n}')
+      per_a=$(awk -v s="${auth}" -v n="${nval}" 'BEGIN{printf "%.6f", s/n}')
+    else
+      per_w="nan"; per_a="nan"
+    fi
+    echo "[SUMMARY] policy=${label} controller_duration_sum=${ctrl}s authorization_time_sum=${auth}s n_valid=${nval} walk_per_start=${per_w}s auth_per_start=${per_a}s" \
       | tee -a "${SUMMARY_FILE}"
   fi
 }

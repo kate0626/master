@@ -1,0 +1,2 @@
+[SUMMARY] policy=memo controller_duration_sum=140.760580s authorization_time_sum=11.607343s
+[SUMMARY] policy=none controller_duration_sum=152.467062s authorization_time_sum=24.356679s

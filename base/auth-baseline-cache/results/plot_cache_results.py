@@ -8,10 +8,20 @@ auth-baseline-cache の結果を読み込み、グラフごと・ポリシーご
   results/cache_comparison_walk_time.png   ウォーク時間
   results/cache_comparison_hitrate.png     ヒット率
   results/cache_comparison_combined.png    時間 + ヒット率（横2面）
+  
+  
+  python3 base/auth-baseline-cache/results/plot_cache_results.py \
+  --results-dir base/auth-baseline-cache/results/alpha0.01_walks_100_capa_100
+  --out-dir base/rtt
+  python3 base/auth-baseline-cache/results/plot_hitrate_by_access_freq.py \
+  --results-dir base/auth-baseline-cache/results/alpha0.01_walks_100_capa_100
 """
+
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -21,8 +31,15 @@ import matplotlib.ticker as mticker
 import numpy as np
 
 # macOS では Hiragino Sans、Linux では Noto Sans CJK JP を優先して使う
-_JP_FONTS = ["Hiragino Sans", "Hiragino Maru Gothic Pro", "AppleGothic",
-             "Noto Sans CJK JP", "IPAGothic", "IPAPGothic", "TakaoGothic"]
+_JP_FONTS = [
+    "Hiragino Sans",
+    "Hiragino Maru Gothic Pro",
+    "AppleGothic",
+    "Noto Sans CJK JP",
+    "IPAGothic",
+    "IPAPGothic",
+    "TakaoGothic",
+]
 _available = {f.name for f in matplotlib.font_manager.fontManager.ttflist}
 for _f in _JP_FONTS:
     if _f in _available:
@@ -100,19 +117,28 @@ def load_results(results_dir: Path) -> dict:
                 start_node = ctrl.get("start_node", -1)
 
                 # キーの揺れに対応
-                cache_hit  = d.get("cache hit",  d.get("cache_hit",  0))
+                cache_hit = d.get("cache hit", d.get("cache_hit", 0))
                 cache_miss = d.get("cache miss", d.get("cache_miss", 0))
                 cache_rate = d.get("cache rate", d.get("cache_rate", 0.0))
+                walk_time = float(d.get("walk_time_total", 0.0))
 
-                data[graph][policy].append({
-                    "auth_time_total": float(d.get("auth_time_total", 0.0)),
-                    "walk_time_total": float(d.get("walk_time_total", 0.0)),
-                    "cache_hit":  int(cache_hit),
-                    "cache_miss": int(cache_miss),
-                    "cache_rate": float(cache_rate),
-                    "capacity":   capacity,
-                    "start_node": start_node,
-                })
+                # Length=1 ＆ Traceback の start_node を除外する。
+                # JSON 自体には avg_length が入っていないので、walk_time<1s で判定する
+                # （Length=1 の walk_time は ~0.02s, Length=100+ では ~30s なので明確に分離可能）。
+                if walk_time < 1.0:
+                    continue
+
+                data[graph][policy].append(
+                    {
+                        "auth_time_total": float(d.get("auth_time_total", 0.0)),
+                        "walk_time_total": walk_time,
+                        "cache_hit": int(cache_hit),
+                        "cache_miss": int(cache_miss),
+                        "cache_rate": float(cache_rate),
+                        "capacity": capacity,
+                        "start_node": start_node,
+                    }
+                )
 
     return data
 
@@ -120,8 +146,13 @@ def load_results(results_dir: Path) -> dict:
 def aggregate(records: list) -> dict:
     """
     同一 (graph, policy) のレコードリストを集約する。
-    - 時間: capacity ごとに start_node を合計し、capacity 間で平均
-    - ヒット率: 全レコードのヒット数 / (ヒット+ミス) で再計算
+    Length=1 / Traceback の start_node は load_results 側で既に除外されている前提。
+
+    - 時間: capacity ごとに有効 start_node の平均 (= per-start 平均) を出し、
+            capacity 間で平均する。
+            「start_node 数で割ってから」平均することで、Length=1 除外で
+            n_valid が graph/policy 間で変動しても公平比較できる。
+    - ヒット率: 全レコードのヒット数 / (ヒット+ミス) で再計算。
     """
     if not records:
         return {"auth_time": 0.0, "walk_time": 0.0, "cache_rate": 0.0}
@@ -130,21 +161,24 @@ def aggregate(records: list) -> dict:
     for r in records:
         by_cap[r["capacity"]].append(r)
 
-    cap_auth_times = []
-    cap_walk_times = []
+    cap_auth_per_start = []
+    cap_walk_per_start = []
     total_hit = 0
     total_miss = 0
 
     for cap_records in by_cap.values():
-        cap_auth_times.append(sum(r["auth_time_total"] for r in cap_records))
-        cap_walk_times.append(sum(r["walk_time_total"] for r in cap_records))
-        total_hit  += sum(r["cache_hit"]  for r in cap_records)
+        n = len(cap_records)
+        if n == 0:
+            continue
+        cap_auth_per_start.append(sum(r["auth_time_total"] for r in cap_records) / n)
+        cap_walk_per_start.append(sum(r["walk_time_total"] for r in cap_records) / n)
+        total_hit += sum(r["cache_hit"] for r in cap_records)
         total_miss += sum(r["cache_miss"] for r in cap_records)
 
     denom = total_hit + total_miss
     return {
-        "auth_time":  float(np.mean(cap_auth_times)),
-        "walk_time":  float(np.mean(cap_walk_times)),
+        "auth_time": float(np.mean(cap_auth_per_start)) if cap_auth_per_start else 0.0,
+        "walk_time": float(np.mean(cap_walk_per_start)) if cap_walk_per_start else 0.0,
         "cache_rate": total_hit / denom if denom > 0 else 0.0,
     }
 
@@ -158,7 +192,8 @@ def _add_bars(ax, x, graphs, policy_vals, bar_width, value_fmt):
         vals = policy_vals.get(policy, [0.0] * len(graphs))
         offset = (i - (n_policies - 1) / 2) * bar_width
         bars = ax.bar(
-            x + offset, vals,
+            x + offset,
+            vals,
             width=bar_width,
             label=POLICY_LABELS.get(policy, policy),
             color=POLICY_COLORS.get(policy, None),
@@ -171,8 +206,10 @@ def _add_bars(ax, x, graphs, policy_vals, bar_width, value_fmt):
                     bar.get_x() + bar.get_width() / 2,
                     bar.get_height() * 1.02,
                     value_fmt.format(val),
-                    ha="center", va="bottom",
-                    fontsize=7, rotation=45,
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    rotation=45,
                 )
 
 
@@ -223,8 +260,13 @@ def make_combined_chart(
 
     graph_tick_labels = [GRAPH_LABELS.get(g, g) for g in graphs]
     for ax, ylabel, title, pct in [
-        (ax1, "認可時間合計 [s]",  "認可時間\n(start_node合計 / capacity平均)", False),
-        (ax2, "キャッシュヒット率", "キャッシュヒット率",                        True),
+        (
+            ax1,
+            "認可時間 [s] (per start_node 平均)",
+            "認可時間\n(per-start平均 / capacity平均, Length=1除外)",
+            False,
+        ),
+        (ax2, "キャッシュヒット率", "キャッシュヒット率", True),
     ]:
         ax.set_xticks(x)
         ax.set_xticklabels(graph_tick_labels, fontsize=10)
@@ -246,13 +288,38 @@ def make_combined_chart(
 
 # ---------------------------------------------------------------------------
 # main
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 def main() -> None:
-    data = load_results(RESULTS_DIR)
+    ap = argparse.ArgumentParser(
+        description="auth-baseline-cache 結果のポリシー比較グラフを生成"
+    )
+    ap.add_argument(
+        "--results-dir",
+        type=Path,
+        default=RESULTS_DIR,
+        help="graph/policy_cap/*.json を検索するディレクトリ (default: スクリプトと同階層)",
+    )
+    ap.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="画像の出力先 (default: --results-dir と同じ)",
+    )
+    args = ap.parse_args()
+
+    results_dir = args.results_dir
+    out_dir = args.out_dir if args.out_dir else results_dir
+
+    # OUT_DIR をモジュールスコープで参照しているので上書きする
+    global OUT_DIR
+    OUT_DIR = out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    data = load_results(results_dir)
 
     if not data:
         print("[ERROR] 結果ファイルが見つかりませんでした。")
-        print(f"        検索先: {RESULTS_DIR}")
+        print(f"        検索先: {results_dir}")
         return
 
     # グラフ表示順（既知のものを先に、残りをアルファベット順で追加）
@@ -271,10 +338,10 @@ def main() -> None:
 
     # policy → [graph0値, graph1値, ...] リスト
     auth_time_vals: dict = {
-        p: [agg[g][p]["auth_time"]  for g in graphs] for p in POLICY_ORDER
+        p: [agg[g][p]["auth_time"] for g in graphs] for p in POLICY_ORDER
     }
     walk_time_vals: dict = {
-        p: [agg[g][p]["walk_time"]  for g in graphs] for p in POLICY_ORDER
+        p: [agg[g][p]["walk_time"] for g in graphs] for p in POLICY_ORDER
     }
     cache_rate_vals: dict = {
         p: [agg[g][p]["cache_rate"] for g in graphs] for p in POLICY_ORDER
@@ -282,7 +349,9 @@ def main() -> None:
 
     # サマリ表示
     print("\n===== 集約結果サマリ =====")
-    print(f"{'グラフ':<22} {'ポリシー':<8} {'認可時間[s]':>12} {'ウォーク時間[s]':>14} {'ヒット率':>8}")
+    print(
+        f"{'グラフ':<22} {'ポリシー':<8} {'認可時間[s]':>12} {'ウォーク時間[s]':>14} {'ヒット率':>8}"
+    )
     print("-" * 68)
     for graph in graphs:
         for policy in POLICY_ORDER:
@@ -299,19 +368,22 @@ def main() -> None:
 
     # 個別グラフ出力
     make_bar_chart(
-        graphs, auth_time_vals,
-        ylabel="認可時間合計 [s]",
-        title="キャッシュポリシー別 認可時間比較\n(start_node合計 / capacity平均)",
+        graphs,
+        auth_time_vals,
+        ylabel="認可時間 [s] (per start_node 平均)",
+        title="キャッシュポリシー別 認可時間比較\n(per-start平均 / capacity平均, Length=1除外)",
         out_path=OUT_DIR / "cache_comparison_auth_time.png",
     )
     make_bar_chart(
-        graphs, walk_time_vals,
-        ylabel="ウォーク時間合計 [s]",
-        title="キャッシュポリシー別 ウォーク時間比較\n(start_node合計 / capacity平均)",
+        graphs,
+        walk_time_vals,
+        ylabel="ウォーク時間 [s] (per start_node 平均)",
+        title="キャッシュポリシー別 ウォーク時間比較\n(per-start平均 / capacity平均, Length=1除外)",
         out_path=OUT_DIR / "cache_comparison_walk_time.png",
     )
     make_bar_chart(
-        graphs, cache_rate_vals,
+        graphs,
+        cache_rate_vals,
         ylabel="キャッシュヒット率",
         title="キャッシュポリシー別 ヒット率比較",
         out_path=OUT_DIR / "cache_comparison_hitrate.png",
@@ -321,7 +393,9 @@ def main() -> None:
 
     # 時間 + ヒット率 結合グラフ
     make_combined_chart(
-        graphs, auth_time_vals, cache_rate_vals,
+        graphs,
+        auth_time_vals,
+        cache_rate_vals,
         out_path=OUT_DIR / "cache_comparison_combined.png",
     )
 

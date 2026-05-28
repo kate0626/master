@@ -1,0 +1,5 @@
+[SUMMARY] policy=hybrid-lru controller_duration_sum=144.022339s authorization_time_sum=16.366133s
+[SUMMARY] policy=bfs-lru controller_duration_sum=142.090915s authorization_time_sum=13.550910s
+[SUMMARY] policy=degree-lru controller_duration_sum=147.673154s authorization_time_sum=16.542032s
+[SUMMARY] policy=lru controller_duration_sum=141.353718s authorization_time_sum=13.491944s
+[SUMMARY] policy=none controller_duration_sum=152.086258s authorization_time_sum=24.115331s

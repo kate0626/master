@@ -14,7 +14,7 @@
 
 使い方例:
   python3 base/auth-baseline-cache/analyze_cache_causes.py \
-    --results-dir base/auth-baseline-cache/results/walks_1000_capa_100 \
+    --results-dir base/auth-baseline-cache/results/alpha0.01_walks_100_capa_100\
     --graphs karate amazon0601 vldb \
     --graph-dir dataset/Louvain/graph
 

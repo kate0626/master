@@ -11,6 +11,7 @@ auth-cache-bfs-degree の実験結果を可視化する。
 """
 
 import re
+import sys
 import matplotlib
 
 matplotlib.use("Agg")
@@ -45,20 +46,42 @@ POLICY_COLORS = {
 
 
 def parse_summary_log(path: Path) -> dict:
-    """all_policies_summary.log → {policy: {"ctrl": s, "auth": s}}"""
+    """all_policies_summary.log → {policy: {"ctrl": s, "auth": s, "n": ?}}
+
+    新形式（splits.sh 更新後）は `n_valid=...` も含まれる。
+    旧形式（n_valid なし）の場合は n を入れないので、後段で
+    Length=1 を含んだ生値だと判定できるようにする。
+    """
     data = {}
-    pat = re.compile(
+    # 新形式（n_valid あり）
+    pat_new = re.compile(
+        r"\[SUMMARY\] policy=(\S+) "
+        r"controller_duration_sum=([\d.]+)s "
+        r"authorization_time_sum=([\d.]+)s "
+        r"n_valid=(\d+)"
+    )
+    # 旧形式
+    pat_old = re.compile(
         r"\[SUMMARY\] policy=(\S+) "
         r"controller_duration_sum=([\d.]+)s "
         r"authorization_time_sum=([\d.]+)s"
     )
     with open(path) as f:
         for line in f:
-            m = pat.search(line)
+            m = pat_new.search(line)
             if m:
                 data[m.group(1)] = {
                     "ctrl": float(m.group(2)),
                     "auth": float(m.group(3)),
+                    "n":    int(m.group(4)),
+                }
+                continue
+            m = pat_old.search(line)
+            if m:
+                data[m.group(1)] = {
+                    "ctrl": float(m.group(2)),
+                    "auth": float(m.group(3)),
+                    # n を入れない → 旧 summary は Length=1 込みなので per-start 計算には使えない
                 }
     return data
 
@@ -169,6 +192,30 @@ def _find_baseline_policy_data(graph: str, policy: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
+def _ensure_filtered(graph: str, policy: str, data: dict) -> dict:
+    """`n` を持たないエントリ（旧 summary 由来）は raw log を読み直して
+    Length=1 除外済みの ctrl/auth/n に置き換える。"""
+    if "n" in data:
+        return data
+    # bfs-degree 側で同一 policy の raw log があれば優先
+    local = _find_local_policy_data(graph, policy)
+    if local and "n" in local:
+        return local
+    # baseline 側を読み直す
+    base_name = _baseline_graph_name(graph)
+    for root in BASELINE_ROOTS:
+        log_path = root / base_name / f"{policy}_100" / f"{base_name}.log"
+        if log_path.exists():
+            re_parsed = parse_log_sum(log_path)
+            if re_parsed:
+                return re_parsed
+    # どうしても n が取れなければ fallback として 5 で割る前提のままにしておくが、
+    # 警告だけ表示する
+    print(f"[warn] cannot determine n_valid for graph={graph} policy={policy}; "
+          f"using NUM_START_NODES={NUM_START_NODES}", file=sys.stderr)
+    return data
+
+
 def plot_graph(graph: str, data: dict, out_dir: Path) -> None:
     # 全ポリシーを bfs-degree 結果 → なければ baseline の順で補完
     resolved = dict(data)  # bfs-degree 側の生データ
@@ -188,14 +235,23 @@ def plot_graph(graph: str, data: dict, out_dir: Path) -> None:
                     resolved[policy] = bl
                     from_baseline[policy] = True
 
+    # ★ どのエントリも n_valid を持つように補正する（旧 summary の Length=1 込み値を捨てる）
+    for policy in list(resolved.keys()):
+        resolved[policy] = _ensure_filtered(graph, policy, resolved[policy])
+
     # memo は常に baseline から取得（bfs-degree では実行しない）
     memo_data = _find_baseline_policy_data(graph, "memo")
     if memo_data:
+        memo_data = _ensure_filtered(graph, "memo", memo_data)
         from_baseline["memo"] = True
 
     def _per(d: dict) -> float:
-        """合計値を有効スタートノード数で割って1ノードあたりの平均を返す。"""
-        return d["ctrl"] / d.get("n", NUM_START_NODES)
+        """合計値を有効スタートノード数で割って1ノードあたりの平均を返す。
+        n_valid が取れない場合だけ NUM_START_NODES に fallback する。"""
+        n = d.get("n")
+        if n is None or n <= 0:
+            n = NUM_START_NODES
+        return d["ctrl"] / n
 
     policies = [p for p in POLICY_ORDER if p in resolved]
     memo_per = _per(memo_data) if memo_data else None

@@ -24,11 +24,13 @@ OUT_DIR = BFS_BASE
 DATASETS = {
     "amazon": {
         "bfs_dir": BFS_BASE / "amazon0601" / "bfs",
+        "log_basename": "amazon0601.log",
         "none_log": BFS_BASE / "amazon0601" / "base" / "none_100" / "amazon0601.log",
         "memo_log": BASELINE / "amazon0601" / "memo_100" / "amazon0601.log",
     },
     "vldb": {
         "bfs_dir": BFS_BASE / "vldb" / "bfs",
+        "log_basename": "vldb.log",
         "none_log": BASELINE / "vldb" / "none_100" / "vldb.log",
         "memo_log": BASELINE / "vldb" / "memo_100" / "vldb.log",
     },
@@ -92,8 +94,9 @@ def collect_bfs_data() -> dict:
     data = {}
     for ds_name, cfg in DATASETS.items():
         data[ds_name] = {}
+        log_name = cfg.get("log_basename", "vldb.log")
         for far in FAR_VALUES:
-            log = cfg["bfs_dir"] / f"bfs-lru_far{far}_depth2_100" / "vldb.log"
+            log = cfg["bfs_dir"] / f"bfs-lru_far{far}_depth2_100" / log_name
             if not log.exists():
                 continue
             rows = parse_log(log)
