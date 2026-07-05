@@ -8,8 +8,9 @@ import os
 import random
 import re
 import resource
+import threading
 import time
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -500,6 +501,7 @@ class PeerWalker:
         ppr_mode: bool = False,
         node_to_starts: Optional[Dict[NodeOrEdgeId, Set[int]]] = None,
         owner_map: Optional[Dict[str, int]] = None,
+        auth_cache: Optional["AuthCache"] = None,
     ):
         self.shard = shard
         self.endpoints = [
@@ -513,6 +515,7 @@ class PeerWalker:
         self.ppr_mode = ppr_mode
         self.node_to_starts: Dict[NodeOrEdgeId, Set[int]] = node_to_starts or {}
         self.owner_map: Dict[str, int] = owner_map or {}
+        self.auth_cache = auth_cache
 
     def _record_auth_cost(self, duration: float) -> None:
         if self.stats_collector is None:
@@ -564,6 +567,13 @@ class PeerWalker:
         self, start_node: Optional[int], candidate: Dict[str, Any]
     ) -> bool:
         target = candidate["node_id"]
+
+        # キャッシュヒットチェック
+        if self.auth_cache is not None and start_node is not None:
+            cached, hit = self.auth_cache.get(start_node, str(target))
+            if hit:
+                return cached  # type: ignore[return-value]
+
         owner_sid: Optional[int] = None
         if self.owner_map:
             owner_sid = self.owner_map.get(str(target))
@@ -579,6 +589,11 @@ class PeerWalker:
         else:
             allowed = self._check_remote_authorization(owner_sid, start_node, target)
         self._record_auth_cost(time.perf_counter() - t0)
+
+        # キャッシュに書く
+        if self.auth_cache is not None and start_node is not None:
+            self.auth_cache.put(start_node, str(target), allowed)
+
         return allowed
 
     def _get_local_neighbors(self, entity_id: Any) -> List[Dict[str, Any]]:
@@ -752,6 +767,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/access_stats":
+            ac = self.server.auth_cache
             payload = {
                 "access": dict(self.server.access_counter),
                 "authorized": dict(self.server.authorized_counter),
@@ -764,6 +780,10 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
                 "auth_calls": self.server.auth_calls,
                 "walk_time_total": self.server.walk_time_total,
                 "walk_calls": self.server.walk_calls,
+                "auth_cache_hit": ac.hit_count,
+                "auth_cache_miss": ac.miss_count,
+                "auth_cache_size": ac.size(),
+                "auth_cache_capacity": ac.capacity,
                 "memory": summarize_tables(self.server),
             }
             self._write_json(payload)
@@ -813,6 +833,12 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         if parsed.path == "/authorize":
             self._handle_authorize()
             return
+        if parsed.path == "/cache/reset":
+            self._handle_cache_reset()
+            return
+        if parsed.path == "/cache/prefetch":
+            self._handle_cache_prefetch()
+            return
         self.send_error(404, "Unknown path")
 
     def _handle_walk_start(self) -> None:
@@ -848,6 +874,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             ppr_mode=getattr(self.server, "ppr_mode", False),
             node_to_starts=getattr(self.server, "node_to_starts", None),
             owner_map=getattr(self.server, "owner_map", None),
+            auth_cache=getattr(self.server, "auth_cache", None),
         )
 
         start_ts = time.perf_counter()
@@ -908,6 +935,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             ppr_mode=getattr(self.server, "ppr_mode", False),
             node_to_starts=getattr(self.server, "node_to_starts", None),
             owner_map=getattr(self.server, "owner_map", None),
+            auth_cache=getattr(self.server, "auth_cache", None),
         )
         try:
             t0 = time.perf_counter()
@@ -950,6 +978,57 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             {"allowed": allowed, "entity": entity, "server_id": self.server.server_id}
         )
 
+    def _handle_cache_reset(self) -> None:
+        self.server.auth_cache.reset()
+        self._write_json({
+            "status": "ok",
+            "server_id": self.server.server_id,
+            "capacity": self.server.auth_cache.capacity,
+        })
+
+    def _handle_cache_prefetch(self) -> None:
+        """
+        payload: {"start_node": int, "nodes": [node_id, ...]}
+        このサーバが所有するノードだけ事前認証してキャッシュに投入する。
+        """
+        params = self._read_json_body()
+        if params is None:
+            return
+        start_node = params.get("start_node")
+        nodes = params.get("nodes", [])
+        if start_node is None:
+            self.send_error(400, "Missing start_node")
+            return
+        try:
+            start_int = int(start_node)
+        except Exception:
+            self.send_error(400, "start_node must be integer")
+            return
+
+        inserted = 0
+        for raw_node in nodes:
+            entity = parse_entity_id(raw_node)
+            # このサーバが所有するエンティティのみキャッシュ
+            owner_sid = self.server.owner_map.get(str(entity))
+            if owner_sid is None:
+                owner_sid = self.server.shard.partitioner.assign_entity(entity)
+            if owner_sid != self.server.server_id:
+                continue
+            # 認証結果を計算してキャッシュに入れる
+            denied_starts = self.server.node_to_starts.get(entity, set())
+            allowed = (not denied_starts) or (start_int not in denied_starts)
+            self.server.auth_cache.put(start_int, str(entity), allowed)
+            inserted += 1
+
+        self._write_json({
+            "status": "ok",
+            "server_id": self.server.server_id,
+            "start_node": start_int,
+            "requested": len(nodes),
+            "inserted": inserted,
+            "cache_size": self.server.auth_cache.size(),
+        })
+
     def log_message(self, format: str, *args) -> None:
         return
 
@@ -974,6 +1053,50 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
 
+class AuthCache:
+    """スレッドセーフな LRU 認証結果キャッシュ。capacity=0 で無効化。"""
+
+    def __init__(self, capacity: int = 0) -> None:
+        self.capacity = capacity
+        self._cache: OrderedDict = OrderedDict()
+        self._lock = threading.Lock()
+        self.hit_count = 0
+        self.miss_count = 0
+
+    def get(self, start_node: int, entity: str):
+        if self.capacity <= 0:
+            return None, False
+        key = (start_node, entity)
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                self.hit_count += 1
+                return self._cache[key], True
+            self.miss_count += 1
+            return None, False
+
+    def put(self, start_node: int, entity: str, allowed: bool) -> None:
+        if self.capacity <= 0:
+            return
+        key = (start_node, entity)
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            self._cache[key] = allowed
+            while len(self._cache) > self.capacity:
+                self._cache.popitem(last=False)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._cache.clear()
+            self.hit_count = 0
+            self.miss_count = 0
+
+    def size(self) -> int:
+        with self._lock:
+            return len(self._cache)
+
+
 class GraphShardServer(ThreadingHTTPServer):
     def __init__(
         self,
@@ -982,6 +1105,7 @@ class GraphShardServer(ThreadingHTTPServer):
         shard: GraphShard,
         endpoints: Sequence[str],
         request_timeout: float = 5.0,
+        cache_capacity: int = 0,
     ) -> None:
         super().__init__((host, port), EdgeAwareHandler)
         self.shard = shard
@@ -1003,6 +1127,8 @@ class GraphShardServer(ThreadingHTTPServer):
         self.auth_calls = 0
         self.walk_time_total = 0.0
         self.walk_calls = 0
+
+        self.auth_cache = AuthCache(capacity=cache_capacity)
 
 
 # ---------------------------------------------------------------------------
@@ -1070,6 +1196,12 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Dump filtered auth/node_to_starts to auth_dump_server{sid}.json for debugging.",
     )
+    parser.add_argument(
+        "--cache-capacity",
+        type=int,
+        default=0,
+        help="LRU 認証キャッシュの容量（エントリ数）。0 = キャッシュ無効（デフォルト）。",
+    )
     return parser.parse_args()
 
 
@@ -1128,7 +1260,9 @@ def main() -> None:
         shard=shard,
         endpoints=args.server_endpoints,
         request_timeout=args.request_timeout,
+        cache_capacity=args.cache_capacity,
     )
+    print(f"[Server {args.server_id}] auth_cache capacity={args.cache_capacity} ({'enabled' if args.cache_capacity > 0 else 'disabled'})")
 
     if args.auth_file:
         auth_table = load_entity_auth_table(Path(args.auth_file))

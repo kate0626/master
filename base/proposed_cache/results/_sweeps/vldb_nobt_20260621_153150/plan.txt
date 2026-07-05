@@ -1,0 +1,6 @@
+sweep generated 20260621_153150
+graph=vldb cap=100 no_backtrack=1 policies=ppr_demand
+lw=20
+theta=2 delta=1 lambda=0.5 1.0 2.0
+beta=1 gamma=0
+total=3

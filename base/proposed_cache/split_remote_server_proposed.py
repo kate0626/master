@@ -600,8 +600,209 @@ class FrozenPrefetchCache(BaseDecisionCache):
         return self._frozen
 
 
+class PPRBoundedCache(BaseDecisionCache):
+    """
+    提案手法本命: 構造prior × 頻度の加法スコアによる容量有界キャッシュ。
+
+    退去優先度 (大きいほど残す):
+        H(e) = L + V(e) / size(e)
+      - combine="add" (本命 ppr_demand):
+            V(e) = max(0, freq(e) - delta) + theta * w_prior(e)
+          ・実際に来た回数 (freq) が貯まれば prior を上書きする加法形 (rich-get-richer)。
+          ・delta : 初回ヒットの割引 (= 「2回目で本物」, 1-hit-wonder 抑制)。
+          ・theta : 構造prior の強さ (疑似カウント)。
+      - combine="mul" (レガシー ppr_gdsf): V(e) = freq(e) × w_prior(e)
+      - w_prior(e) : (1−α)^dist × deg(e)。
+          ・use_hop_prior=True (ppr_demand): dist = walker の hops_done (= 歩いた歩数)。
+            初回ミス挿入時に server が set_prior() で固定。BFS/prefetch 不要。
+          ・use_hop_prior=False (ppr_gdsf): prior_fn(BFS距離) 経由で毎回算出。
+      - L     : aging クロック (退去エントリの H に更新 = LRU 的 recency)
+      - size  : DecisionCacheSizer の重み (node=1, edge=2)
+    容量超過時は argmin H を退去し L←H_evicted。entries は容量 N で有界。
+
+    prior 未設定時は w_prior=1.0 (= サイズ加重 LFU/LRU に縮退)。
+    """
+
+    def __init__(
+        self,
+        capacity: int,
+        sizer: Optional[DecisionCacheSizer] = None,
+        prior_fn: Optional[Any] = None,
+        theta: float = 1.0,
+        delta: float = 0.0,
+        combine: str = "mul",
+        use_hop_prior: bool = False,
+        lambda_learn: float = 1.0,
+    ) -> None:
+        if capacity <= 0:
+            raise ValueError("PPRBoundedCache capacity must be positive")
+        self.capacity = capacity
+        self.sizer = sizer or DecisionCacheSizer()
+        self.prior_fn = prior_fn
+        self.theta = float(theta)
+        self.delta = float(delta)
+        self.lambda_learn = float(lambda_learn)  # 学習係数 λ の強さ
+        self.combine = combine if combine in ("add", "mul") else "mul"
+        self.use_hop_prior = bool(use_hop_prior)
+        self.store: Dict[Tuple[int, str], bool] = {}
+        self.freq: Dict[Tuple[int, str], int] = {}
+        self.H: Dict[Tuple[int, str], float] = {}
+        self.weights: Dict[Tuple[int, str], int] = {}
+        self.prior_val: Dict[Tuple[int, str], float] = {}  # 挿入時固定の hop prior
+        # learn(e): Phase1(学習RW) で観測したアクセス回数。退去しても消さない
+        # (ghost係数として残し、再挿入時に head start を与える)。
+        self.learn: Dict[Tuple[int, str], float] = {}
+        self.total_weight = 0
+        self.L = 0.0
+        self.insertions = 0
+        self.updates = 0
+        self.evictions = 0
+        self.rejected_too_large = 0
+        self.seeded = 0  # prefetch で投入した件数
+
+    def _prior(self, key: Tuple[int, str]) -> float:
+        # use_hop_prior: 挿入時に固定した hop prior を優先
+        if self.use_hop_prior:
+            p = self.prior_val.get(key)
+            if p is not None:
+                return p if p > 0 else 1e-12
+        if self.prior_fn is None:
+            return 1.0
+        try:
+            p = float(self.prior_fn(key))
+        except Exception:
+            p = 1.0
+        return p if p > 0 else 1e-12
+
+    def set_prior(self, key: Tuple[int, str], prior: float) -> None:
+        """挿入時に hop ベースの w_prior を固定保存する (ppr_demand 用)。"""
+        self.prior_val[key] = prior if prior > 0 else 1e-12
+
+    def bump_prior(self, key: Tuple[int, str], prior: float) -> None:
+        """再遭遇時、より小さい hops(=より大きい prior) を観測したら更新 (最短hop追跡)。"""
+        prior = prior if prior > 0 else 1e-12
+        cur = self.prior_val.get(key)
+        if cur is None or prior > cur:
+            self.prior_val[key] = prior
+
+    def set_learn(self, key: Tuple[int, str], value: float) -> None:
+        """学習係数 learn(e) を固定保存する。Phase1 の観測アクセス回数を加法項として注入。
+        store にあれば H を即再計算 (退去順を更新)。なければ次回挿入時に有効化される。
+        """
+        self.learn[key] = float(value) if value > 0 else 0.0
+        if key in self.store:
+            size = self.weights.get(key) or 1
+            self.H[key] = self.L + self._score(key) / size
+
+    def _score(self, key: Tuple[int, str]) -> float:
+        """V(e): combine="add" は加法 (rich-get-richer), "mul" はレガシー乗法。
+
+        add: V = max(0, freq−δ) + θ·w_prior + λ·learn
+          - max(0, freq−δ) : オンライン需要 (δ で 1-hit を割引)
+          - θ·w_prior      : 構造prior (1−α)^hop × deg
+          - λ·learn        : 学習係数 (Phase1 で観測した実アクセス回数)
+                             構造で拾えない「低次数・遠いが来る」ものを救う加法項。
+        """
+        f = self.freq.get(key, 1)
+        p = self._prior(key)
+        if self.combine == "add":
+            l = self.learn.get(key, 0.0)
+            return max(0.0, f - self.delta) + self.theta * p + self.lambda_learn * l
+        return f * p
+
+    def __contains__(self, key: Tuple[int, str]) -> bool:
+        return key in self.store
+
+    def __getitem__(self, key: Tuple[int, str]) -> bool:
+        # ヒット: freq を増やし H を再計算 (観測補正)
+        self.freq[key] = self.freq.get(key, 1) + 1
+        size = self.weights.get(key) or 1
+        self.H[key] = self.L + self._score(key) / size
+        return self.store[key]
+
+    def __setitem__(self, key: Tuple[int, str], value: bool) -> None:
+        value = bool(value)
+        w = self.sizer.entry_weight(key, value)
+        if w > self.capacity:
+            self.rejected_too_large += 1
+            return
+        if key in self.store:
+            old_w = self.weights.get(key, 0)
+            self.store[key] = value
+            self.weights[key] = w
+            self.total_weight += w - old_w
+            self.H[key] = self.L + self._score(key) / w
+            self.updates += 1
+            self._evict_until_fit()
+            return
+        self.store[key] = value
+        self.freq[key] = 1
+        self.weights[key] = w
+        self.total_weight += w
+        self.H[key] = self.L + self._score(key) / w
+        self.insertions += 1
+        self._evict_until_fit()
+
+    def __len__(self) -> int:
+        return len(self.store)
+
+    def current_weight(self) -> int:
+        return self.total_weight
+
+    def max_weight(self) -> Optional[int]:
+        return self.capacity
+
+    def _evict_until_fit(self) -> None:
+        while self.total_weight > self.capacity and self.store:
+            victim = min(self.H, key=self.H.__getitem__)
+            h_v = self.H.pop(victim)
+            if h_v > self.L:
+                self.L = h_v  # GDSF aging
+            self.total_weight -= self.weights.pop(victim, 0)
+            self.store.pop(victim, None)
+            self.freq.pop(victim, None)
+            self.prior_val.pop(victim, None)
+            self.evictions += 1
+
+    def storage_objects(self) -> Dict[str, Any]:
+        return {
+            "store": self.store,
+            "freq": self.freq,
+            "H": self.H,
+            "weights": self.weights,
+            "total_weight": self.total_weight,
+        }
+
+    def stats(self) -> Dict[str, Any]:
+        base = super().stats()
+        base.update(
+            {
+                "policy": "ppr_demand" if self.combine == "add" else "ppr_gdsf",
+                "combine": self.combine,
+                "theta": self.theta,
+                "delta": self.delta,
+                "lambda_learn": self.lambda_learn,
+                "use_hop_prior": self.use_hop_prior,
+                "entries": len(self.store),
+                "learn_entries": len(self.learn),
+                "insertions": self.insertions,
+                "updates": self.updates,
+                "evictions": self.evictions,
+                "rejected_too_large": self.rejected_too_large,
+                "seeded": self.seeded,
+                "aging_L": self.L,
+            }
+        )
+        return base
+
+
 def build_authz_cache(
-    policy: str, capacity: int, sizer: Optional[DecisionCacheSizer] = None
+    policy: str,
+    capacity: int,
+    sizer: Optional[DecisionCacheSizer] = None,
+    theta: float = 1.0,
+    delta: float = 0.0,
+    lambda_learn: float = 1.0,
 ) -> BaseDecisionCache:
     policy_name = (policy or "none").lower()
     if policy_name == "none":
@@ -615,21 +816,42 @@ def build_authz_cache(
     # 提案手法
     if policy_name in ("bfs_prefetch", "bfs_score"):
         return FrozenPrefetchCache(sizer=sizer)
+    if policy_name == "ppr_gdsf":
+        # レガシー: prefetch + BFS prior + 乗法
+        return PPRBoundedCache(capacity, sizer=sizer, combine="mul")
+    if policy_name == "ppr_demand":
+        # 本命: prefetch なし + hop prior + 加法
+        #   V = max(0, freq−δ) + θ·w_prior + λ·learn
+        # learn(e) は Phase1 学習で注入する加法の学習係数 (リセットなしで持ち越し)。
+        return PPRBoundedCache(
+            capacity,
+            sizer=sizer,
+            theta=theta,
+            delta=delta,
+            combine="add",
+            use_hop_prior=True,
+            lambda_learn=lambda_learn,
+        )
     raise ValueError(f"Unsupported cache policy: {policy}")
 
 
 # ===========================================================================
 # 提案手法用のヘルパ
 # ===========================================================================
-def _bfs_distances_from(shard: Any, start: int, max_hops: int = 30) -> Dict[Any, int]:
+def _bfs_distances_from(
+    shard: Any, start: int, max_hops: int = 30, node_limit: Optional[int] = None
+) -> Dict[Any, int]:
     """
-    shard の neighbor_map を用いて、start_node から各ノードまでの BFS 距離を計算。
-    int の node ID のみを対象とする (edge は無視)。max_hops 以遠は到達しない。
+    shard の neighbor_map を用いて、start_node から各 entity までの bipartite BFS 距離を計算。
+    node→edge→node と交互に進むので、距離は bipartite hop 数 (node は偶数, edge は奇数)。
+    max_hops 以遠は到達しない。node_limit 件に達したら探索を打ち切る (prefetch コスト上限)。
     """
     from collections import deque
     dist: Dict[Any, int] = {start: 0}
     q = deque([start])
     while q:
+        if node_limit is not None and len(dist) >= node_limit:
+            break
         u = q.popleft()
         du = dist[u]
         if du >= max_hops:
@@ -715,6 +937,49 @@ def cache_entity_key(entity: Any, node_only: bool = False) -> str:
             return f"node:{entity}"
         return entity
     return str(entity)
+
+
+def entity_from_cache_key(entity_key: Any) -> NodeOrEdgeId:
+    """cache_entity_key の逆変換: 'node:12'->12, 'edge_1_2'->'edge_1_2', '5'->5"""
+    if isinstance(entity_key, str):
+        if entity_key.startswith("node:"):
+            rest = entity_key[5:]
+            try:
+                return int(rest)
+            except Exception:
+                return rest
+        if entity_key.startswith("edge_"):
+            return entity_key
+        if entity_key.isdigit():
+            return int(entity_key)
+    return entity_key
+
+
+def make_ppr_prior_fn(server: Any) -> Any:
+    """
+    PPRBoundedCache 用の prior_fn を生成。
+        w_prior(e) = (1−α)^(β·bfs_dist(s,e)) × deg(e)^γ
+    server に保持した _ppr_dist / _ppr_alpha / _ppr_max_dist と
+    shard.neighbor_map (次数)、β=ppr_prior_hop_exp / γ=ppr_prior_deg_exp を参照する closure。
+    """
+    dist = getattr(server, "_ppr_dist", {}) or {}
+    alpha = float(getattr(server, "_ppr_alpha", 0.0) or 0.0)
+    one_minus_alpha = max(0.0, 1.0 - alpha)
+    max_dist = int(getattr(server, "_ppr_max_dist", 0) or 0)
+    beta = float(getattr(server, "ppr_prior_hop_exp", 1.0))
+    gamma = float(getattr(server, "ppr_prior_deg_exp", 1.0))
+    nm = server.shard.neighbor_map
+
+    def prior_fn(ckey: Tuple[int, str]) -> float:
+        _, ekey = ckey
+        ent = entity_from_cache_key(ekey)
+        d = dist.get(ent)
+        if d is None:
+            d = max_dist + 1  # BFS 範囲外は floor prior
+        deg = len(nm.get(ent, ())) or 1
+        return (one_minus_alpha ** (beta * d)) * (float(deg) ** gamma)
+
+    return prior_fn
 
 
 def parse_entity_id(raw: Any) -> NodeOrEdgeId:
@@ -1340,8 +1605,31 @@ class PeerWalker:
     #     return allowed
 
     # ここを確認　キャッシュありの時
+    def _hop_prior(self, target: Any, hops_done: int, alpha: float) -> float:
+        """w_prior = (1−α)^(β·hops) × deg(target)^γ。距離は walker の hops_done。
+        β(prior_hop_exp): 大きいほど距離の減衰を急にし「始点距離」を重視。
+        γ(prior_deg_exp): 小さいほど次数の効きを弱める (γ=0 で次数無視=純距離)。
+        α は walk 本体と共用なので触らず、距離/次数の比重は β/γ で調整する。
+        """
+        nm = getattr(self.shard, "neighbor_map", None)
+        if nm is not None:
+            deg = len(nm.get(target, ())) or 1
+        else:
+            deg = len(self._get_local_neighbors(target)) or 1
+        one_minus_alpha = max(0.0, 1.0 - float(alpha))
+        beta = float(getattr(self.server, "ppr_prior_hop_exp", 1.0)) if self.server else 1.0
+        gamma = float(getattr(self.server, "ppr_prior_deg_exp", 1.0)) if self.server else 1.0
+        decay = one_minus_alpha ** (beta * max(0, int(hops_done)))
+        deg_term = float(deg) ** gamma
+        return decay * deg_term
+
     def _authorize_candidate(
-        self, start_node: Optional[int], candidate: Dict[str, Any]
+        self,
+        start_node: Optional[int],
+        candidate: Dict[str, Any],
+        hops_done: int = 0,
+        alpha: float = 0.0,
+        walk_id: Optional[int] = None,
     ) -> bool:
         target = candidate["node_id"]
         candidate_server = candidate.get("server_id")
@@ -1365,12 +1653,23 @@ class PeerWalker:
         ckey = (int(start_node), ekey)
         # print(ekey, ckey)
 
+        # 仮説検証用イベント記録 (到着順のキャッシュアクセス列)
+        if self.server is not None and self.server.access_events is not None:
+            _hit = ckey in self.server.authz_cache
+            self.server.access_events.append(
+                (walk_id, str(target), int(hops_done), bool(_hit))
+            )
+
         if self.server is not None and ckey in self.server.authz_cache:
             self.server.auth_cache_hit += 1
+            cache = self.server.authz_cache
             # 提案手法: prefetch によるヒットかどうかを記録
-            if isinstance(self.server.authz_cache, FrozenPrefetchCache):
+            if isinstance(cache, (FrozenPrefetchCache, PPRBoundedCache)):
                 self.server.auth_cache_hit_prefetched += 1
-            return bool(self.server.authz_cache[ckey])
+            # ppr_demand: 再遭遇でより短い hops を観測したら prior を最短側に更新
+            if isinstance(cache, PPRBoundedCache) and cache.use_hop_prior:
+                cache.bump_prior(ckey, self._hop_prior(target, hops_done, alpha))
+            return bool(cache[ckey])
 
         if self.server is not None:
             # print("キャッシュなしの時")
@@ -1395,11 +1694,35 @@ class PeerWalker:
 
         # ★追加：結果を保存（ALLOW/DENY両方）
         if self.server is not None:
-            self.server.authz_cache[ckey] = bool(allowed)
-        print(
-            f"[Server {self.shard.server_id}] candidate_result "
-            f"start={start_node} target={target} allowed={allowed}"
-        )
+            # --- admission control ---
+            # (1) 距離閾値: hops_done > admit_max_hops はキャッシュしない
+            admit_max = getattr(self.server, "admit_max_hops", 0)
+            _is_edge = isinstance(ekey, str) and ekey.startswith("edge_")
+            admit_edge_only_scope = getattr(self.server, "admit_edge_only_scope", False)
+            # (2) ノード専用モード: エッジはキャッシュしない
+            admit_node_only = getattr(self.server, "admit_node_only", False)
+            over_admit_hops = admit_max > 0 and int(hops_done) > admit_max
+            if admit_edge_only_scope:
+                over_admit_hops = over_admit_hops and _is_edge
+
+            if over_admit_hops:
+                pass  # キャッシュ非挿入 (距離超過)
+            elif admit_node_only and _is_edge:
+                pass  # キャッシュ非挿入 (ノード専用モード: エッジを除外)
+            else:
+                cache = self.server.authz_cache
+                # ppr_demand: 挿入時に hop ベースの w_prior=(1−α)^hops × deg を保存。
+                # bump_prior を使い「より短いhop(=より大きいprior)」を優先。
+                # これにより学習フェーズで注入された empirical prior も上書きされない
+                # (注入済みempiricalが構造priorより大きければ保持される)。
+                if isinstance(cache, PPRBoundedCache) and cache.use_hop_prior:
+                    cache.bump_prior(ckey, self._hop_prior(target, hops_done, alpha))
+                cache[ckey] = bool(allowed)
+        # NOTE: ミス毎の print はログ肥大/速度低下を招くため無効化 (デバッグ時のみ復活)
+        # print(
+        #     f"[Server {self.shard.server_id}] candidate_result "
+        #     f"start={start_node} target={target} allowed={allowed}"
+        # )
 
         return bool(allowed)
 
@@ -1426,8 +1749,22 @@ class PeerWalker:
             return
         counter[key] += 1
 
-    def _record_entity_visit(self, entity_id: Any) -> None:
+    def _record_entity_visit(
+        self, entity_id: Any, hops_done: Optional[int] = None
+    ) -> None:
         self._bump("access_counter", entity_id)
+        if hops_done is not None:
+            self._record_access_distance(entity_id, hops_done)
+
+    def _record_access_distance(self, entity_id: Any, hops_done: int) -> None:
+        """hops_done(=bipartite hop 距離) ごとのアクセス回数を node/edge 別に計上。"""
+        if self.stats_collector is None:
+            return
+        is_edge = isinstance(entity_id, str) and entity_id.startswith("edge_")
+        attr = "edge_access_by_distance" if is_edge else "node_access_by_distance"
+        counter = getattr(self.stats_collector, attr, None)
+        if counter is not None:
+            counter[int(hops_done)] += 1
 
     def _record_authorization_attempt(self, source: Any) -> None:
         self._bump("authorization_attempt_counter", source)
@@ -1460,17 +1797,25 @@ class PeerWalker:
         neighbors: List[Dict[str, Any]],
         start_node: Optional[int],
         current_entity: NodeId,
+        hops_done: int = 0,
+        alpha: float = 0.0,
+        walk_id: Optional[int] = None,
+        try_last: Any = None,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         if not neighbors:
             return None, None
 
         indices = list(range(len(neighbors)))
         rng.shuffle(indices)
+        # try_last (= 非バックトラック時の来た側ノード) は試行順の最後に回す。
+        # 反対端が認可されればそちらへ進み、ダメな時だけ来た側に戻る。
+        if try_last is not None:
+            indices.sort(key=lambda i: 1 if neighbors[i].get("node_id") == try_last else 0)
         for idx in indices:
             self._record_authorization_attempt(current_entity)
             cand = neighbors[idx]
             cid = cand["node_id"]
-            if self._authorize_candidate(start_node, cand):
+            if self._authorize_candidate(start_node, cand, hops_done, alpha, walk_id):
                 self._record_authorization_success(current_entity, cid)
                 return cand, None
             else:
@@ -1499,9 +1844,15 @@ class PeerWalker:
         servers = list(state["servers"])
         alpha = float(state["alpha"])
         hops_done = int(state.get("hops_done", 0))
+        walk_id = state.get("walk_id")
         start_node = self._resolve_start_node(state, path)
 
-        self._record_entity_visit(current_entity)
+        # 距離計上は前進ステップ (line: next_entity) で行う。ここでの初回 visit は
+        # handoff 再入でも発火するため、hops_done==0 (=新規 walk の始点) のときだけ
+        # 距離0として計上し、handoff 時の二重計上を避ける。
+        self._record_entity_visit(
+            current_entity, hops_done if hops_done == 0 else None
+        )
 
         while hops_done < self.max_hops and rng.random() > alpha:
             hops_done += 1
@@ -1524,6 +1875,7 @@ class PeerWalker:
                     "alpha": alpha,
                     "rng_state": serialize_rng_state(rng),
                     "hops_done": hops_done,
+                    "walk_id": walk_id,
                 }
                 return self._post_continue(owner, state_out)
             # print(
@@ -1532,12 +1884,20 @@ class PeerWalker:
             # )
 
             neighbors = self._get_local_neighbors(current_entity)
-            # print(
-            #     f"[Server {current_sid}] neighbors "
-            #     f"entity={current_entity} count={len(neighbors)}"
-            # )
+            # 非バックトラック: エッジ実体に居るとき、来た側ノード(path[-2])は
+            # 「最後の手段」にする。反対端を先に試し、それが渡れない(denied)時だけ
+            # 来た側に戻る (= ユーザモデル「認可あれば反対へ/ダメなら他にいく」)。
+            try_last = None
+            if (
+                getattr(self.server, "no_backtrack", False)
+                and isinstance(current_entity, str)
+                and current_entity.startswith("edge_")
+                and len(path) >= 2
+            ):
+                try_last = path[-2]
             next_choice, denial_payload = self._select_next_neighbor(
-                rng, neighbors, start_node, current_entity
+                rng, neighbors, start_node, current_entity, hops_done, alpha,
+                walk_id, try_last,
             )
             if next_choice is None:
                 result = {
@@ -1557,7 +1917,7 @@ class PeerWalker:
             #     f"next={next_entity} next_server={next_server}"
             # )
 
-            self._record_entity_visit(next_entity)
+            self._record_entity_visit(next_entity, hops_done)
 
             path.append(next_entity)
             servers.append(next_server)
@@ -1576,6 +1936,7 @@ class PeerWalker:
                     "alpha": alpha,
                     "rng_state": serialize_rng_state(rng),
                     "hops_done": hops_done,
+                    "walk_id": walk_id,
                 }
                 return self._post_continue(next_server, state_out)
 
@@ -1594,12 +1955,30 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/health":
-            self._write_json({"status": "ok", "server_id": self.server.server_id})
+            self._write_json({
+                "status": "ok",
+                "server_id": self.server.server_id,
+                "no_backtrack": getattr(self.server, "no_backtrack", False),
+                "log_access_events": getattr(self.server, "access_events", None) is not None,
+            })
+            return
+
+        if parsed.path == "/access_events":
+            self._write_json({
+                "server_id": self.server.server_id,
+                "access_events": self.server.access_events or [],
+            })
             return
 
         if parsed.path == "/access_stats":
             payload = {
                 "access": dict(self.server.access_counter),
+                "node_access_by_distance": dict(
+                    self.server.node_access_by_distance
+                ),
+                "edge_access_by_distance": dict(
+                    self.server.edge_access_by_distance
+                ),
                 "authorized": dict(self.server.authorized_counter),
                 "authorization_attempts": dict(
                     self.server.authorization_attempt_counter
@@ -1701,6 +2080,9 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         if parsed.path == "/cache/freeze":
             self._handle_cache_freeze()
             return
+        if parsed.path == "/cache/refresh_priors":
+            self._handle_cache_refresh_priors()
+            return
         self.send_error(404, "Unknown path")
 
     def _handle_walk_start(self) -> None:
@@ -1754,6 +2136,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
                 "alpha": float(alpha),
                 "rng_state": serialize_rng_state(rng),
                 "hops_done": 0,
+                "walk_id": i,
             }
             t0 = time.perf_counter()
             res = walker.continue_from_state(initial_state)
@@ -1844,7 +2227,12 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
     def _handle_cache_reset(self) -> None:
         s = self.server
         s.authz_cache = build_authz_cache(
-            s.auth_cache_policy, s.auth_cache_capacity, sizer=s.auth_cache_sizer
+            s.auth_cache_policy,
+            s.auth_cache_capacity,
+            sizer=s.auth_cache_sizer,
+            theta=getattr(s, "ppr_theta", 1.0),
+            delta=getattr(s, "ppr_delta", 0.0),
+            lambda_learn=getattr(s, "ppr_lambda", 1.0),
         )
         s.auth_cache_hit = 0
         s.auth_cache_miss = 0
@@ -1857,7 +2245,16 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         s.walk_calls = 0
         s.prefetch_size = 0
         s.prefetch_build_time = 0.0
+        # 提案手法 ppr_gdsf: prior 用の状態もクリア (prefetch で再設定)
+        s._ppr_dist = {}
+        s._ppr_alpha = 0.0
+        s._ppr_max_dist = 0
+        s._prefetch_remote_fail_count = 0
         s.access_counter.clear()
+        s.node_access_by_distance.clear()
+        s.edge_access_by_distance.clear()
+        if s.access_events is not None:
+            s.access_events.clear()
         s.authorized_counter.clear()
         s.authorization_attempt_counter.clear()
         s.authorization_denied_counter.clear()
@@ -1897,7 +2294,7 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
 
         s = self.server
         policy = s.auth_cache_policy
-        if policy not in ("bfs_prefetch", "bfs_score"):
+        if policy not in ("bfs_prefetch", "bfs_score", "ppr_gdsf"):
             self._write_json({"status": "skipped", "reason": f"policy={policy}"})
             return
 
@@ -1910,7 +2307,13 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         K = int(payload.get("K", 10))
         capacity = int(payload.get("capacity", 100))
         decay = float(payload.get("decay", 0.7))
+        alpha = float(payload.get("alpha", 0.0))
         attempts = payload.get("attempts", {})
+
+        # ===== 提案本命: PPR×GDSF 容量有界キャッシュの seed =====
+        if policy == "ppr_gdsf":
+            self._prefetch_ppr_gdsf(s, start_node, alpha, capacity)
+            return
 
         # ---- BFS for distances ----
         t0 = time.perf_counter()
@@ -1983,6 +2386,86 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             "policy": s.auth_cache_policy,
         })
 
+    def _prefetch_ppr_gdsf(
+        self, s: Any, start_node: int, alpha: float, capacity: int
+    ) -> None:
+        """
+        PPRBoundedCache を w_prior 上位で seed する。
+          w_prior(e) = (1−α)^bfs_dist(s,e) × deg(e)
+        seed 後も freeze せず、walk 中は GDSF で自己維持 (miss 挿入・容量退去)。
+        """
+        cache = s.authz_cache
+        if not isinstance(cache, PPRBoundedCache):
+            self._write_json({"status": "skipped", "reason": "cache is not PPRBounded"})
+            return
+
+        t0 = time.perf_counter()
+        # BFS (bipartite hop)。prefetch コスト上限: 容量の ~20 倍まで探索
+        node_limit = max(capacity * 20, 1000)
+        dist = _bfs_distances_from(
+            s.shard, start_node, max_hops=10 ** 9, node_limit=node_limit
+        )
+        # prior_fn 用の状態を server に保持し、closure を注入
+        s._ppr_dist = dist
+        s._ppr_alpha = alpha
+        s._ppr_max_dist = max(dist.values()) if dist else 0
+        cache.prior_fn = make_ppr_prior_fn(s)
+
+        one_minus_alpha = max(0.0, 1.0 - alpha)
+        nm = s.shard.neighbor_map
+        scored = []
+        for ent, d in dist.items():
+            deg = len(nm.get(ent, ())) or 1
+            scored.append(((one_minus_alpha ** d) * deg, ent))
+        scored.sort(key=lambda x: -x[0])
+        # 上位だけを seed 候補に (リモート問い合わせ回数を抑制)
+        selected = [ent for _, ent in scored[:capacity]]
+
+        _node_only = getattr(s, "cache_key_mode", "full") == "node_only"
+        inserted = 0
+        for target in selected:
+            ekey = cache_entity_key(target, node_only=_node_only)
+            ckey = (start_node, ekey)
+            if ckey in cache:
+                continue
+            owner_sid = None
+            if s.owner_map:
+                owner_sid = s.owner_map.get(str(target))
+            if owner_sid is None:
+                try:
+                    owner_sid = s.shard.partitioner.assign_entity(target)
+                except Exception:
+                    owner_sid = None
+            if owner_sid == s.server_id:
+                allowed = _local_allowed_for_prefetch(s, start_node, target)
+            else:
+                allowed = _check_remote_for_prefetch(s, owner_sid, start_node, target)
+            if allowed is None:
+                continue  # リモート失敗 → walk 時の live auth に任せる
+            cache[ckey] = bool(allowed)
+            inserted += 1
+
+        cache.seeded = inserted
+        s.prefetch_size = inserted
+        s.prefetch_build_time = time.perf_counter() - t0
+        s.prefetch_remote_fail_count = getattr(s, "_prefetch_remote_fail_count", 0)
+        self._write_json(
+            {
+                "status": "ok",
+                "mode": "ppr_gdsf",
+                "start_node": start_node,
+                "alpha": alpha,
+                "capacity": capacity,
+                "reachable": len(dist),
+                "selected": len(selected),
+                "inserted": inserted,
+                "cache_entries": len(cache),
+                "cache_weight": cache.current_weight(),
+                "build_time_sec": s.prefetch_build_time,
+                "policy": s.auth_cache_policy,
+            }
+        )
+
     def _handle_cache_freeze(self) -> None:
         """明示的に cache を freeze する。bfs_prefetch/bfs_score 用。"""
         s = self.server
@@ -1992,6 +2475,72 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
             self._write_json({"status": "frozen", "size": len(cache)})
         else:
             self._write_json({"status": "no-op", "policy": s.auth_cache_policy})
+
+    def _handle_cache_refresh_priors(self) -> None:
+        """
+        学習フェーズ (Phase1) 終了後に controller から呼ばれ、実測アクセス頻度を
+        加法の学習係数 learn(e) として PPRBoundedCache に注入する。
+        ※ リセットはしない (Phase1 で温めたキャッシュ・freq・H をそのまま持ち越す)。
+
+        スコア式: V(e) = max(0, freq−δ) + θ·w_prior + λ·learn(e)
+          ここで注入するのは learn(e)。λ はサーバ起動時の --ppr-lambda で固定。
+
+        リクエスト JSON:
+          {
+            "start_node": int,
+            "access_counts": {"entity_str": count, ...},
+            "scale": float   (省略時=1.0: count に乗じるスケール係数。基本 1.0 推奨)
+          }
+
+        動作:
+          - PPRBoundedCache の set_learn(ckey, count*scale) を呼び出す
+            (ckey = (start_node, cache_entity_key(entity_str)))
+          - learn は退去しても消えない (ghost係数) ため、Phase2 で再挿入された
+            エントリにも head start を与える。
+          - store 中のエントリは set_learn 内で H を即再計算 (eviction 順を更新)。
+          - ppr_demand 以外のキャッシュポリシーは no-op
+        """
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        s = self.server
+        cache = s.authz_cache
+        if not isinstance(cache, PPRBoundedCache):
+            self._write_json({
+                "status": "skipped",
+                "reason": f"policy={s.auth_cache_policy} is not PPRBoundedCache",
+            })
+            return
+
+        start_node = payload.get("start_node")
+        access_counts = payload.get("access_counts", {})
+        scale = float(payload.get("scale", 1.0))
+
+        if start_node is None:
+            self.send_error(400, "start_node required")
+            return
+
+        sn = int(start_node)
+        updated = 0
+        for entity_str, count in access_counts.items():
+            cnt = int(count)
+            if cnt <= 0:
+                continue
+            # access_counter は entity_id (int or "edge_X_Y") がキー。
+            # JSON シリアライズで整数ノードも文字列になっているため cache_entity_key で正規化。
+            ckey = (sn, cache_entity_key(str(entity_str)))
+            new_learn = float(cnt) * scale
+            cache.set_learn(ckey, new_learn)  # learn(e) 注入 (store内なら H も即再計算)
+            updated += 1
+
+        self._write_json({
+            "status": "ok",
+            "updated_priors": updated,         # 後方互換: 注入した learn 件数
+            "injected_learn": updated,
+            "lambda_learn": getattr(cache, "lambda_learn", None),
+            "recalculated_scores": len(cache.store),
+        })
 
     def log_message(self, format: str, *args) -> None:
         return
@@ -2029,6 +2578,14 @@ class GraphShardServer(ThreadingHTTPServer):
         cache_capacity: int = 0,
         cache_sizer: Optional[DecisionCacheSizer] = None,
         cache_key_mode: str = "full",
+        ppr_theta: float = 1.0,
+        ppr_delta: float = 0.0,
+        ppr_lambda: float = 1.0,
+        ppr_prior_hop_exp: float = 1.0,
+        ppr_prior_deg_exp: float = 1.0,
+        admit_max_hops: int = 0,
+        admit_edge_only_scope: bool = False,
+        admit_node_only: bool = False,
     ) -> None:
         super().__init__((host, port), EdgeAwareHandler)
         self.shard = shard
@@ -2045,6 +2602,18 @@ class GraphShardServer(ThreadingHTTPServer):
         self.authorization_attempt_counter = Counter()
         self.authorization_denied_counter = Counter()
         self.transition_counter = Counter()
+        # アクセス局所性: bipartite hop 距離 (hops_done) ごとのアクセス回数。
+        # node は偶数 hop、edge は奇数 hop に出る (start node = hop 0)。
+        # access_counter と違い handoff の二重計上を避け、1 前進ステップ=1 計上。
+        self.node_access_by_distance = Counter()
+        self.edge_access_by_distance = Counter()
+        # 仮説検証用: キャッシュアクセス (=_authorize_candidate) を到着順に記録。
+        # LOG_ACCESS_EVENTS=1 のときだけ有効 (通常実行はゼロ影響)。
+        # 各要素 = (walk_id, target_entity, hops_done, was_cache_hit)
+        self.access_events = [] if os.environ.get("LOG_ACCESS_EVENTS") == "1" else None
+        # 非バックトラック: エッジ実体に居るとき来た側ノードを候補から除外し、
+        # 認可があれば必ず反対端へ渡る (元グラフ RW モデル)。NO_BACKTRACK=1 で有効。
+        self.no_backtrack = os.environ.get("NO_BACKTRACK") == "1"
 
         self.auth_time_total = 0.0
         self.auth_calls = 0
@@ -2056,8 +2625,25 @@ class GraphShardServer(ThreadingHTTPServer):
         self.auth_cache_capacity = cache_capacity
         self.auth_cache_sizer = cache_sizer or DecisionCacheSizer()
         self.cache_key_mode = cache_key_mode
+        self.ppr_theta = float(ppr_theta)
+        self.ppr_delta = float(ppr_delta)
+        self.ppr_lambda = float(ppr_lambda)  # 学習係数 λ
+        # w_prior = (1−α)^(β·hop) × deg^γ の距離/次数の指数
+        self.ppr_prior_hop_exp = float(ppr_prior_hop_exp)  # β: 距離の効き (大=距離重視)
+        self.ppr_prior_deg_exp = float(ppr_prior_deg_exp)  # γ: 次数の効き (小=次数軽視, 0=無視)
+        # admit_max_hops: キャッシュ admission の距離閾値 (bipartite hop 単位)
+        # 0 = 閾値なし (全 miss をキャッシュ, 従来動作)
+        # N > 0: hops_done > N のノード/エッジは認可するがキャッシュしない
+        self.admit_max_hops = int(admit_max_hops)
+        self.admit_edge_only_scope = bool(admit_edge_only_scope)
+        self.admit_node_only = bool(admit_node_only)
         self.authz_cache = build_authz_cache(
-            cache_policy, cache_capacity, sizer=self.auth_cache_sizer
+            cache_policy,
+            cache_capacity,
+            sizer=self.auth_cache_sizer,
+            theta=self.ppr_theta,
+            delta=self.ppr_delta,
+            lambda_learn=self.ppr_lambda,
         )
         self.auth_cache_hit = 0
         self.auth_cache_miss = 0
@@ -2065,6 +2651,11 @@ class GraphShardServer(ThreadingHTTPServer):
         self.auth_cache_hit_prefetched = 0  # frozen prefetch エントリでヒットした回数
         self.prefetch_size = 0
         self.prefetch_build_time = 0.0
+        # 提案手法 ppr_gdsf: prior_fn 用の状態 (prefetch で設定)
+        self._ppr_dist: Dict[Any, int] = {}
+        self._ppr_alpha = 0.0
+        self._ppr_max_dist = 0
+        self._prefetch_remote_fail_count = 0
 
         # ---- 計測用：このサーバが参照している入力ファイル ----
         self.edges_path: Optional[str] = None
@@ -2126,10 +2717,71 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--cache-policy",
-        choices=["none", "memo", "lru", "arc", "bfs_prefetch", "bfs_score"],
+        choices=[
+            "none", "memo", "lru", "arc",
+            "bfs_prefetch", "bfs_score", "ppr_gdsf", "ppr_demand",
+        ],
         default="none",
         help="Authorization decision cache policy. "
-        "'bfs_prefetch'/'bfs_score' are 提案手法 (要 /cache/prefetch 呼び出し).",
+        "'bfs_prefetch'/'bfs_score'/'ppr_gdsf' are prefetch 系 (要 /cache/prefetch). "
+        "'ppr_demand' は prefetch 不要のオンデマンド提案手法 "
+        "(加法スコア freq+theta*prior, hop距離 prior, 初回 delta 割引).",
+    )
+    parser.add_argument(
+        "--ppr-theta",
+        type=float,
+        default=1.0,
+        help="ppr_demand: 構造prior の強さ (疑似カウント)。大きいほど近さ/次数を優遇.",
+    )
+    parser.add_argument(
+        "--ppr-delta",
+        type=float,
+        default=0.0,
+        help="ppr_demand: 初回ヒットの割引 (0=割引なし, 1 に近いほど 1-hit-wonder を排除).",
+    )
+    parser.add_argument(
+        "--ppr-lambda",
+        type=float,
+        default=1.0,
+        help="ppr_demand: 学習係数 λ の強さ。V に +λ·learn(e) を加える。"
+        "learn(e)=Phase1(学習RW)で観測した実アクセス回数。大きいほど"
+        "「構造で拾えないが実際は来る」エンティティを残しやすくする.",
+    )
+    parser.add_argument(
+        "--ppr-prior-hop-exp",
+        type=float,
+        default=1.0,
+        help="w_prior=(1−α)^(β·hop)×deg^γ の β (距離指数)。"
+        "1.0=従来。大きいほど距離の減衰が急=始点距離を重視 (次数より距離を効かせる).",
+    )
+    parser.add_argument(
+        "--ppr-prior-deg-exp",
+        type=float,
+        default=1.0,
+        help="w_prior=(1−α)^(β·hop)×deg^γ の γ (次数指数)。"
+        "1.0=従来。小さいほど次数の効きを弱める (0.5=√deg, 0=次数無視=純距離).",
+    )
+    parser.add_argument(
+        "--admit-max-hops",
+        type=int,
+        default=0,
+        help="キャッシュ admission 閾値 (bipartite hop)。"
+        "0=無制限(デフォルト)。N>0: hops_done>N のエンティティは認可するがキャッシュしない。"
+        "例: --admit-max-hops 4 → 元グラフで始点から2ホップ以内のみキャッシュ。",
+    )
+    parser.add_argument(
+        "--admit-edge-only-scope",
+        action="store_true",
+        default=False,
+        help="admit-max-hops を edge 実体にだけ適用する。"
+        "node 実体は距離に関係なくキャッシュ対象のままにする。",
+    )
+    parser.add_argument(
+        "--admit-node-only",
+        action="store_true",
+        default=False,
+        help="ノード専用キャッシュモード。エッジ実体は認可するがキャッシュしない。"
+        "ノードのみに容量を集中させることで、ヒット率向上を狙う。",
     )
     parser.add_argument(
         "--cache-capacity",
@@ -2196,9 +2848,10 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> None:
     args = parse_arguments()
 
-    if args.cache_policy in {"lru", "arc"} and args.cache_capacity <= 0:
+    if args.cache_policy in {"lru", "arc", "ppr_gdsf", "ppr_demand"} and args.cache_capacity <= 0:
         raise ValueError(
-            "--cache-capacity must be positive when --cache-policy is 'lru' or 'arc'"
+            "--cache-capacity must be positive when --cache-policy is "
+            "'lru', 'arc', 'ppr_gdsf', or 'ppr_demand'"
         )
     # 提案手法: capacity は score の上位 N に使う
     if args.cache_policy == "bfs_score" and args.cache_capacity <= 0:
@@ -2271,6 +2924,14 @@ def main() -> None:
         cache_capacity=args.cache_capacity,
         cache_sizer=cache_sizer,
         cache_key_mode=args.cache_key_mode,
+        ppr_theta=args.ppr_theta,
+        ppr_delta=args.ppr_delta,
+        ppr_lambda=args.ppr_lambda,
+        ppr_prior_hop_exp=args.ppr_prior_hop_exp,
+        ppr_prior_deg_exp=args.ppr_prior_deg_exp,
+        admit_max_hops=args.admit_max_hops,
+        admit_edge_only_scope=args.admit_edge_only_scope,
+        admit_node_only=args.admit_node_only,
     )
     server.edges_path = str(edge_path)
 
@@ -2308,6 +2969,8 @@ def main() -> None:
     def dump_access_stats() -> None:
         stats = {
             "access": dict(server.access_counter),
+            "node_access_by_distance": dict(server.node_access_by_distance),
+            "edge_access_by_distance": dict(server.edge_access_by_distance),
             "authorized": dict(server.authorized_counter),
             "authorization_attempts": dict(server.authorization_attempt_counter),
             "authorization_denied": dict(server.authorization_denied_counter),

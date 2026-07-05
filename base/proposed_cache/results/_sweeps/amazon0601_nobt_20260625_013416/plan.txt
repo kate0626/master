@@ -1,0 +1,6 @@
+sweep generated 20260625_013416
+graph=amazon0601 cap=100 no_backtrack=1 policies=ppr_demand
+lw=0 20
+theta=2 delta=1 lambda=1.0
+beta=2.0 gamma=1.0
+total=2

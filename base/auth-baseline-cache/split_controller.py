@@ -308,6 +308,11 @@ def main() -> None:
     global_auth_attempts = defaultdict(int)
     global_auth_denied = defaultdict(int)
     global_transition = defaultdict(int)
+    # ★ 追加: entity key 単位の per-key cache hit / miss
+    global_cache_hit_per_key = defaultdict(int)
+    global_cache_miss_per_key = defaultdict(int)
+    # ★ 追加: hit ordinal ヒストグラム {k: 通算 k 回目ヒットの件数} を全 server 合算
+    global_cache_hit_ordinal = defaultdict(int)
 
     total_auth_time = 0.0
     total_auth_calls = 0
@@ -337,6 +342,14 @@ def main() -> None:
             global_auth_denied[k] += int(v)
         for k, v in stats.get("transition", {}).items():
             global_transition[k] += int(v)
+        # ★ per-key hit/miss を全 server で合算
+        for k, v in stats.get("auth_cache_hit_per_key", {}).items():
+            global_cache_hit_per_key[k] += int(v)
+        for k, v in stats.get("auth_cache_miss_per_key", {}).items():
+            global_cache_miss_per_key[k] += int(v)
+        # ★ hit ordinal ヒストグラムを全 server で合算 (k は int に戻す)
+        for k, v in stats.get("auth_cache_hit_ordinal_hist", {}).items():
+            global_cache_hit_ordinal[int(k)] += int(v)
 
         total_auth_time += float(stats.get("auth_time_total", 0.0))
         total_auth_calls += int(stats.get("auth_calls", 0))
@@ -429,6 +442,14 @@ def main() -> None:
         "cache hit": total_cache_hit,
         "cache miss": total_cache_miss,
         "cache rate": hit_rate,
+        # ★ 追加: entity key 単位の per-key hit / miss (cluster 合算)
+        "cache_hit_per_key": dict(global_cache_hit_per_key),
+        "cache_miss_per_key": dict(global_cache_miss_per_key),
+        # ★ 追加: hit ordinal ヒストグラム {k: 通算 k 回目ヒットの件数} (cluster 合算)
+        "cache_hit_ordinal_hist": {
+            str(k): global_cache_hit_ordinal[k]
+            for k in sorted(global_cache_hit_ordinal)
+        },
     }
 
     out_path = out_dir / output_filename

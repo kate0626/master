@@ -40,8 +40,13 @@ import numpy as np
 
 # 日本語フォント
 _JP_FONTS = [
-    "Hiragino Sans", "Hiragino Maru Gothic Pro", "AppleGothic",
-    "Noto Sans CJK JP", "IPAGothic", "IPAPGothic", "TakaoGothic",
+    "Hiragino Sans",
+    "Hiragino Maru Gothic Pro",
+    "AppleGothic",
+    "Noto Sans CJK JP",
+    "IPAGothic",
+    "IPAPGothic",
+    "TakaoGothic",
 ]
 _avail = {f.name for f in matplotlib.font_manager.fontManager.ttflist}
 for _f in _JP_FONTS:
@@ -54,24 +59,24 @@ for _f in _JP_FONTS:
 # ---------------------------------------------------------------------------
 POLICY_ORDER = ["none", "memo", "lru", "arc", "bfs_prefetch", "bfs_score"]
 POLICY_LABELS = {
-    "none":         "なし",
-    "memo":         "メモ (無制限)",
-    "lru":          "LRU(100)",
-    "arc":          "ARC(100)",
+    "none": "なし",
+    "memo": "メモ (無制限)",
+    "lru": "LRU(100)",
+    "arc": "ARC(100)",
     "bfs_prefetch": "提案1: BFS Prefetch",
-    "bfs_score":    "提案2: BFS Score",
+    "bfs_score": "提案2: BFS Score",
 }
 POLICY_COLORS = {
-    "none":         "#7f7f7f",
-    "memo":         "#1f77b4",
-    "lru":          "#ff7f0e",
-    "arc":          "#2ca02c",
+    "none": "#7f7f7f",
+    "memo": "#1f77b4",
+    "lru": "#ff7f0e",
+    "arc": "#2ca02c",
     "bfs_prefetch": "#9467bd",
-    "bfs_score":    "#17becf",
+    "bfs_score": "#17becf",
 }
 GRAPH_LABELS = {
     "amazon0601": "Amazon0601",
-    "vldb":       "VLDB",
+    "vldb": "VLDB",
 }
 
 
@@ -84,7 +89,11 @@ def parse_one_json(p: Path) -> dict | None:
     except Exception:
         return None
     wt = float(d.get("walk_time_total", 0.0))
-    pm = d.get("prefetch_metrics", {}) if isinstance(d.get("prefetch_metrics", None), dict) else {}
+    pm = (
+        d.get("prefetch_metrics", {})
+        if isinstance(d.get("prefetch_metrics", None), dict)
+        else {}
+    )
     # hop_count = transition dict の値合計
     tr = d.get("transition", {})
     if isinstance(tr, dict):
@@ -144,8 +153,13 @@ def load_dir(root: Path, policy_filter: list[str]) -> dict:
 def aggregate(records: list, exclude_short: bool = True) -> dict:
     if not records:
         return {
-            "walk": 0.0, "auth": 0.0, "prefetch": 0.0, "total": 0.0,
-            "hit_rate": 0.0, "auth_calls": 0.0, "prefetch_size": 0.0,
+            "walk": 0.0,
+            "auth": 0.0,
+            "prefetch": 0.0,
+            "total": 0.0,
+            "hit_rate": 0.0,
+            "auth_calls": 0.0,
+            "prefetch_size": 0.0,
             "n": 0,
         }
     rs = records
@@ -155,8 +169,13 @@ def aggregate(records: list, exclude_short: bool = True) -> dict:
     n = len(rs)
     if n == 0:
         return {
-            "walk": 0.0, "auth": 0.0, "prefetch": 0.0, "total": 0.0,
-            "hit_rate": 0.0, "auth_calls": 0.0, "prefetch_size": 0.0,
+            "walk": 0.0,
+            "auth": 0.0,
+            "prefetch": 0.0,
+            "total": 0.0,
+            "hit_rate": 0.0,
+            "auth_calls": 0.0,
+            "prefetch_size": 0.0,
             "n": 0,
         }
     walk = sum(r["walk_time_total"] for r in rs) / n
@@ -206,13 +225,38 @@ def plot_total_stack(graphs, agg_by_graph, out_path: Path):
         totals = [w + a + p for w, a, p in zip(walks, auths, pfs)]
 
         c = POLICY_COLORS.get(pol, "#888")
-        ax.bar(x, walks, bar_width, color=c, edgecolor="white", linewidth=0.4,
-               label=POLICY_LABELS.get(pol, pol) if i < n_p else None)
-        ax.bar(x, auths, bar_width, bottom=walks, color=c, edgecolor="white",
-               linewidth=0.4, hatch="///", alpha=0.85)
+        ax.bar(
+            x,
+            walks,
+            bar_width,
+            color=c,
+            edgecolor="white",
+            linewidth=0.4,
+            label=POLICY_LABELS.get(pol, pol) if i < n_p else None,
+        )
+        ax.bar(
+            x,
+            auths,
+            bar_width,
+            bottom=walks,
+            color=c,
+            edgecolor="white",
+            linewidth=0.4,
+            hatch="///",
+            alpha=0.85,
+        )
         bottoms_for_pf = [w + a for w, a in zip(walks, auths)]
-        ax.bar(x, pfs, bar_width, bottom=bottoms_for_pf, color=c, edgecolor="black",
-               linewidth=0.6, hatch="xxx", alpha=0.5)
+        ax.bar(
+            x,
+            pfs,
+            bar_width,
+            bottom=bottoms_for_pf,
+            color=c,
+            edgecolor="black",
+            linewidth=0.6,
+            hatch="xxx",
+            alpha=0.5,
+        )
         for xi, t in zip(x, totals):
             if t > 0:
                 ax.text(xi, t * 1.01, f"{t:.1f}", ha="center", va="bottom", fontsize=7)
@@ -228,13 +272,18 @@ def plot_total_stack(graphs, agg_by_graph, out_path: Path):
     ax.grid(axis="y", linestyle="--", alpha=0.4)
     # 凡例: policy + 内訳
     from matplotlib.patches import Patch
-    policy_handles = [Patch(facecolor=POLICY_COLORS[p], label=POLICY_LABELS[p]) for p in pols]
+
+    policy_handles = [
+        Patch(facecolor=POLICY_COLORS[p], label=POLICY_LABELS[p]) for p in pols
+    ]
     section_handles = [
         Patch(facecolor="lightgray", label="walk_time"),
         Patch(facecolor="lightgray", hatch="///", label="auth_time"),
         Patch(facecolor="lightgray", hatch="xxx", alpha=0.5, label="prefetch_time"),
     ]
-    leg1 = ax.legend(handles=policy_handles, loc="upper left", fontsize=8, title="ポリシー")
+    leg1 = ax.legend(
+        handles=policy_handles, loc="upper left", fontsize=8, title="ポリシー"
+    )
     ax.add_artist(leg1)
     ax.legend(handles=section_handles, loc="upper right", fontsize=8, title="内訳")
 
@@ -263,11 +312,27 @@ def plot_walk_with_prefetch(graphs, agg_by_graph, out_path: Path):
         totals = [w + p for w, p in zip(walks, pfs)]
 
         c = POLICY_COLORS.get(pol, "#888")
-        ax.bar(x, walks, bar_width, color=c, edgecolor="white", linewidth=0.4,
-               label=POLICY_LABELS.get(pol, pol))
+        ax.bar(
+            x,
+            walks,
+            bar_width,
+            color=c,
+            edgecolor="white",
+            linewidth=0.4,
+            label=POLICY_LABELS.get(pol, pol),
+        )
         # prefetch portion (only proposed has non-zero)
-        ax.bar(x, pfs, bar_width, bottom=walks, color=c, edgecolor="black",
-               linewidth=0.6, hatch="xxx", alpha=0.5)
+        ax.bar(
+            x,
+            pfs,
+            bar_width,
+            bottom=walks,
+            color=c,
+            edgecolor="black",
+            linewidth=0.6,
+            hatch="xxx",
+            alpha=0.5,
+        )
         for xi, w, t in zip(x, walks, totals):
             if t > 0:
                 ax.text(xi, t * 1.01, f"{t:.1f}", ha="center", va="bottom", fontsize=7)
@@ -282,12 +347,17 @@ def plot_walk_with_prefetch(graphs, agg_by_graph, out_path: Path):
     )
     ax.grid(axis="y", linestyle="--", alpha=0.4)
     from matplotlib.patches import Patch
-    policy_handles = [Patch(facecolor=POLICY_COLORS[p], label=POLICY_LABELS[p]) for p in pols]
+
+    policy_handles = [
+        Patch(facecolor=POLICY_COLORS[p], label=POLICY_LABELS[p]) for p in pols
+    ]
     section_handles = [
         Patch(facecolor="lightgray", label="walk_time"),
         Patch(facecolor="lightgray", hatch="xxx", alpha=0.5, label="prefetch_time"),
     ]
-    leg1 = ax.legend(handles=policy_handles, loc="upper left", fontsize=8, title="ポリシー")
+    leg1 = ax.legend(
+        handles=policy_handles, loc="upper left", fontsize=8, title="ポリシー"
+    )
     ax.add_artist(leg1)
     ax.legend(handles=section_handles, loc="upper right", fontsize=8, title="内訳")
     fig.tight_layout()
@@ -300,9 +370,9 @@ def plot_walk_with_prefetch(graphs, agg_by_graph, out_path: Path):
 # RTT 重み付けプロット
 # ---------------------------------------------------------------------------
 RTT_PATTERNS = [
-    {"key": "close", "label": "近い (10ms)",  "rtt_ms": 10},
-    {"key": "mid",   "label": "中位 (60ms)",  "rtt_ms": 60},
-    {"key": "far",   "label": "遠い (200ms)", "rtt_ms": 200},
+    {"key": "close", "label": "近い (10ms)", "rtt_ms": 10},
+    {"key": "mid", "label": "中位 (60ms)", "rtt_ms": 60},
+    {"key": "far", "label": "遠い (200ms)", "rtt_ms": 200},
 ]
 
 
@@ -315,8 +385,11 @@ def plot_rtt_weighted(graphs, agg_by_graph, out_path: Path, sharey: bool = True)
     """
     n_pat = len(RTT_PATTERNS)
     fig, axes = plt.subplots(
-        1, n_pat, figsize=(max(16, len(graphs) * 4 * n_pat / 2), 5.8),
-        sharey=sharey, squeeze=False,
+        1,
+        n_pat,
+        figsize=(max(16, len(graphs) * 4 * n_pat / 2), 5.8),
+        sharey=sharey,
+        squeeze=False,
     )
     pols = POLICY_ORDER
     n_g = len(graphs)
@@ -349,32 +422,80 @@ def plot_rtt_weighted(graphs, agg_by_graph, out_path: Path, sharey: bool = True)
             for g in graphs:
                 v = agg_by_graph[g].get(pol, {})
                 if not v or v.get("n", 0) == 0:
-                    walks.append(0); auths.append(0); pfs.append(0)
-                    sim_rtts.append(0); totals.append(0)
+                    walks.append(0)
+                    auths.append(0)
+                    pfs.append(0)
+                    sim_rtts.append(0)
+                    totals.append(0)
                     continue
-                w = v["walk"]; a = v["auth"]; p = v["prefetch"]
+                w = v["walk"]
+                a = v["auth"]
+                p = v["prefetch"]
                 sim_rtt = (v.get("hop_count", 0) + v.get("auth_calls", 0)) * rtt_s
-                walks.append(w); auths.append(a); pfs.append(p)
+                walks.append(w)
+                auths.append(a)
+                pfs.append(p)
                 sim_rtts.append(sim_rtt)
                 totals.append(w + a + p + sim_rtt)
 
             c = POLICY_COLORS.get(pol, "#888")
             # 4層: walk → auth → prefetch → sim_rtt
-            ax.bar(x, walks, bar_width, color=c, edgecolor="white", linewidth=0.4,
-                   label=POLICY_LABELS.get(pol, pol) if col == 0 else None)
+            ax.bar(
+                x,
+                walks,
+                bar_width,
+                color=c,
+                edgecolor="white",
+                linewidth=0.4,
+                label=POLICY_LABELS.get(pol, pol) if col == 0 else None,
+            )
             bot = list(walks)
-            ax.bar(x, auths, bar_width, bottom=bot, color=c, edgecolor="white",
-                   linewidth=0.4, hatch="///", alpha=0.85)
+            ax.bar(
+                x,
+                auths,
+                bar_width,
+                bottom=bot,
+                color=c,
+                edgecolor="white",
+                linewidth=0.4,
+                hatch="///",
+                alpha=0.85,
+            )
             bot = [b + a for b, a in zip(bot, auths)]
-            ax.bar(x, pfs, bar_width, bottom=bot, color=c, edgecolor="black",
-                   linewidth=0.6, hatch="xxx", alpha=0.5)
+            ax.bar(
+                x,
+                pfs,
+                bar_width,
+                bottom=bot,
+                color=c,
+                edgecolor="black",
+                linewidth=0.6,
+                hatch="xxx",
+                alpha=0.5,
+            )
             bot = [b + p for b, p in zip(bot, pfs)]
-            ax.bar(x, sim_rtts, bar_width, bottom=bot, color=c, edgecolor="black",
-                   linewidth=0.6, hatch="...", alpha=0.45)
+            ax.bar(
+                x,
+                sim_rtts,
+                bar_width,
+                bottom=bot,
+                color=c,
+                edgecolor="black",
+                linewidth=0.6,
+                hatch="...",
+                alpha=0.45,
+            )
             for xi, t in zip(x, totals):
                 if t > 0:
-                    ax.text(xi, t * 1.005, f"{t:.0f}", ha="center", va="bottom",
-                            fontsize=6, rotation=0)
+                    ax.text(
+                        xi,
+                        t * 1.005,
+                        f"{t:.0f}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=6,
+                        rotation=0,
+                    )
 
         ax.set_xticks(x_base)
         ax.set_xticklabels([GRAPH_LABELS.get(g, g) for g in graphs], fontsize=10)
@@ -387,23 +508,39 @@ def plot_rtt_weighted(graphs, agg_by_graph, out_path: Path, sharey: bool = True)
 
     # 凡例
     from matplotlib.patches import Patch
-    policy_handles = [Patch(facecolor=POLICY_COLORS[p], label=POLICY_LABELS[p]) for p in pols]
+
+    policy_handles = [
+        Patch(facecolor=POLICY_COLORS[p], label=POLICY_LABELS[p]) for p in pols
+    ]
     section_handles = [
         Patch(facecolor="lightgray", label="walk_time (実測)"),
         Patch(facecolor="lightgray", hatch="///", label="auth_time (実測)"),
-        Patch(facecolor="lightgray", hatch="xxx", alpha=0.5,
-              label="prefetch_time (実測, 提案のみ)"),
-        Patch(facecolor="lightgray", hatch="...", alpha=0.45,
-              label="sim RTT = (hops+auth_calls)×RTT"),
+        Patch(
+            facecolor="lightgray",
+            hatch="xxx",
+            alpha=0.5,
+            label="prefetch_time (実測, 提案のみ)",
+        ),
+        Patch(
+            facecolor="lightgray",
+            hatch="...",
+            alpha=0.45,
+            label="sim RTT = (hops+auth_calls)×RTT",
+        ),
     ]
-    leg1 = axes[0][0].legend(handles=policy_handles, loc="upper left", fontsize=7, title="ポリシー")
+    leg1 = axes[0][0].legend(
+        handles=policy_handles, loc="upper left", fontsize=7, title="ポリシー"
+    )
     axes[0][0].add_artist(leg1)
-    axes[0][-1].legend(handles=section_handles, loc="upper right", fontsize=7, title="内訳")
+    axes[0][-1].legend(
+        handles=section_handles, loc="upper right", fontsize=7, title="内訳"
+    )
 
     fig.suptitle(
         "提案手法 vs 既存ポリシー — 均一 RTT 適用後の総時間比較\n"
         "実測 (walk + auth + prefetch) + 模擬通信 (hops + auth_calls) × RTT",
-        fontsize=13, y=1.03,
+        fontsize=13,
+        y=1.03,
     )
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -411,8 +548,16 @@ def plot_rtt_weighted(graphs, agg_by_graph, out_path: Path, sharey: bool = True)
     print(f"[saved] {out_path}")
 
 
-def plot_metric(graphs, agg_by_graph, metric: str, ylabel: str, title: str,
-                out_path: Path, value_fmt: str = "{:.2f}", pct: bool = False):
+def plot_metric(
+    graphs,
+    agg_by_graph,
+    metric: str,
+    ylabel: str,
+    title: str,
+    out_path: Path,
+    value_fmt: str = "{:.2f}",
+    pct: bool = False,
+):
     """単一メトリクスの棒グラフ"""
     fig, ax = plt.subplots(figsize=(max(10, len(graphs) * 5.5), 5.0))
     pols = POLICY_ORDER
@@ -426,13 +571,26 @@ def plot_metric(graphs, agg_by_graph, metric: str, ylabel: str, title: str,
         x = x_base + offset
         vals = [agg_by_graph[g].get(pol, {}).get(metric, 0.0) for g in graphs]
         c = POLICY_COLORS.get(pol, "#888")
-        ax.bar(x, vals, bar_width, color=c, edgecolor="white", linewidth=0.4,
-               label=POLICY_LABELS.get(pol, pol))
+        ax.bar(
+            x,
+            vals,
+            bar_width,
+            color=c,
+            edgecolor="white",
+            linewidth=0.4,
+            label=POLICY_LABELS.get(pol, pol),
+        )
         for xi, v in zip(x, vals):
             if v > 0 or (pct and v >= 0):
                 show = v * 100 if pct else v
-                ax.text(xi, v * 1.01 if not pct else v + 0.01,
-                        value_fmt.format(show), ha="center", va="bottom", fontsize=7)
+                ax.text(
+                    xi,
+                    v * 1.01 if not pct else v + 0.01,
+                    value_fmt.format(show),
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                )
 
     ax.set_xticks(x_base)
     ax.set_xticklabels([GRAPH_LABELS.get(g, g) for g in graphs], fontsize=11)
@@ -454,12 +612,21 @@ def plot_metric(graphs, agg_by_graph, metric: str, ylabel: str, title: str,
 def save_csv(graphs, agg_by_graph, out_path: Path):
     with open(out_path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow([
-            "graph", "policy",
-            "walk_time_s", "auth_time_s", "prefetch_time_s", "total_s",
-            "hit_rate", "auth_calls_avg", "prefetch_size_avg", "n_valid",
-            "diff_vs_lru_total_s",
-        ])
+        w.writerow(
+            [
+                "graph",
+                "policy",
+                "walk_time_s",
+                "auth_time_s",
+                "prefetch_time_s",
+                "total_s",
+                "hit_rate",
+                "auth_calls_avg",
+                "prefetch_size_avg",
+                "n_valid",
+                "diff_vs_lru_total_s",
+            ]
+        )
         for g in graphs:
             lru_total = agg_by_graph[g].get("lru", {}).get("total", 0.0)
             for pol in POLICY_ORDER:
@@ -467,14 +634,21 @@ def save_csv(graphs, agg_by_graph, out_path: Path):
                 if not v or v["n"] == 0:
                     continue
                 diff = v["total"] - lru_total
-                w.writerow([
-                    g, pol,
-                    f"{v['walk']:.4f}", f"{v['auth']:.4f}",
-                    f"{v['prefetch']:.4f}", f"{v['total']:.4f}",
-                    f"{v['hit_rate']:.4f}", f"{v['auth_calls']:.1f}",
-                    f"{v['prefetch_size']:.0f}", v["n"],
-                    f"{diff:+.4f}",
-                ])
+                w.writerow(
+                    [
+                        g,
+                        pol,
+                        f"{v['walk']:.4f}",
+                        f"{v['auth']:.4f}",
+                        f"{v['prefetch']:.4f}",
+                        f"{v['total']:.4f}",
+                        f"{v['hit_rate']:.4f}",
+                        f"{v['auth_calls']:.1f}",
+                        f"{v['prefetch_size']:.0f}",
+                        v["n"],
+                        f"{diff:+.4f}",
+                    ]
+                )
     print(f"[saved] {out_path}")
 
 
@@ -484,17 +658,22 @@ def save_csv(graphs, agg_by_graph, out_path: Path):
 def main():
     ap = argparse.ArgumentParser(description="提案手法 vs 既存ポリシー 実時間比較")
     ap.add_argument(
-        "--baseline-dir", type=Path, required=True,
+        "--baseline-dir",
+        type=Path,
+        required=True,
         help="auth-baseline-cache の結果ディレクトリ "
         "(例: base/auth-baseline-cache/results/alpha0.01_walks_100_capa_100)",
     )
     ap.add_argument(
-        "--proposed-dir", type=Path, required=True,
+        "--proposed-dir",
+        type=Path,
+        required=True,
         help="proposed_cache の結果ディレクトリ "
         "(例: base/proposed_cache/results/alpha0.01_walks_100_capa_100)",
     )
     ap.add_argument(
-        "--out-dir", type=Path,
+        "--out-dir",
+        type=Path,
         default=Path("base/proposed_cache/output_compare"),
     )
     args = ap.parse_args()
@@ -513,7 +692,9 @@ def main():
         g for g in all_graphs if g not in graph_order
     ]
     if not graphs:
-        print(f"[ERROR] no graphs found in baseline={args.baseline_dir} or proposed={args.proposed_dir}")
+        print(
+            f"[ERROR] no graphs found in baseline={args.baseline_dir} or proposed={args.proposed_dir}"
+        )
         return
 
     # 集約
@@ -530,8 +711,10 @@ def main():
     print("=" * 110)
     for g in graphs:
         print(f"\n--- {GRAPH_LABELS.get(g, g)} ---")
-        print(f"{'policy':<25}{'walk[s]':>9}{'auth[s]':>9}{'prefetch[s]':>13}"
-              f"{'total[s]':>10}{'auth_calls':>12}{'hit_rate':>10}{'vs LRU':>10}{'n':>4}")
+        print(
+            f"{'policy':<25}{'walk[s]':>9}{'auth[s]':>9}{'prefetch[s]':>13}"
+            f"{'total[s]':>10}{'auth_calls':>12}{'hit_rate':>10}{'vs LRU':>10}{'n':>4}"
+        )
         print("-" * 110)
         lru_total = agg_by_graph[g].get("lru", {}).get("total", 0.0)
         for pol in POLICY_ORDER:
@@ -559,19 +742,41 @@ def main():
     plot_total_stack(graphs, agg_by_graph, out_dir / "compare_total_time.png")
     # walk_time に prefetch_time を含めた版
     plot_walk_with_prefetch(graphs, agg_by_graph, out_dir / "compare_walk_time.png")
-    plot_metric(graphs, agg_by_graph, "auth", "auth_time [s]",
-                "認可時間 (per-start 平均)", out_dir / "compare_auth_time.png")
-    plot_metric(graphs, agg_by_graph, "prefetch", "prefetch_time [s]",
-                "プリフェッチ時間 (per-start 平均, 提案手法のみ)",
-                out_dir / "compare_prefetch_time.png", value_fmt="{:.3f}")
-    plot_metric(graphs, agg_by_graph, "hit_rate", "キャッシュヒット率",
-                "キャッシュヒット率 (per-start 平均)",
-                out_dir / "compare_hit_rate.png", value_fmt="{:.1f}%", pct=True)
+    plot_metric(
+        graphs,
+        agg_by_graph,
+        "auth",
+        "auth_time [s]",
+        "認可時間 (per-start 平均)",
+        out_dir / "compare_auth_time.png",
+    )
+    plot_metric(
+        graphs,
+        agg_by_graph,
+        "prefetch",
+        "prefetch_time [s]",
+        "プリフェッチ時間 (per-start 平均, 提案手法のみ)",
+        out_dir / "compare_prefetch_time.png",
+        value_fmt="{:.3f}",
+    )
+    plot_metric(
+        graphs,
+        agg_by_graph,
+        "hit_rate",
+        "キャッシュヒット率",
+        "キャッシュヒット率 (per-start 平均)",
+        out_dir / "compare_hit_rate.png",
+        value_fmt="{:.1f}%",
+        pct=True,
+    )
 
     # 出力 — 2. RTT 重み付けプロット (3パターン横並び)
-    plot_rtt_weighted(graphs, agg_by_graph, out_dir / "compare_rtt_weighted.png", sharey=True)
-    plot_rtt_weighted(graphs, agg_by_graph,
-                      out_dir / "compare_rtt_weighted_indep_y.png", sharey=False)
+    plot_rtt_weighted(
+        graphs, agg_by_graph, out_dir / "compare_rtt_weighted.png", sharey=True
+    )
+    plot_rtt_weighted(
+        graphs, agg_by_graph, out_dir / "compare_rtt_weighted_indep_y.png", sharey=False
+    )
 
     print(f"\n完了。出力先: {out_dir}")
 

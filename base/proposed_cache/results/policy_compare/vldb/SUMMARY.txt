@@ -1,0 +1,5 @@
+graph=vldb cap=100 walks=100 alpha=0.01 no_backtrack=1 theta=1.0 delta=0.5
+policy            hit     miss   hit_rate  auth_time_s
+memo            18860    34435      0.354      22.6316
+lru             15850    37445      0.297      15.1274
+ppr_demand      15546    37749      0.292      15.9412

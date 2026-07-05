@@ -1223,6 +1223,16 @@ class PeerWalker:
         if self.server is not None and ckey in self.server.authz_cache:
             # print("キャッシュありの時")
             self.server.auth_cache_hit += 1
+            # per-key カウンタ (entity key 単位)
+            self.server.auth_cache_hit_per_key[ekey] = (
+                self.server.auth_cache_hit_per_key.get(ekey, 0) + 1
+            )
+            # hit ordinal: この ckey の通算ヒット番号 k を集計
+            _ord_k = self.server.auth_cache_hit_ordinal_per_ckey.get(ckey, 0) + 1
+            self.server.auth_cache_hit_ordinal_per_ckey[ckey] = _ord_k
+            self.server.auth_cache_hit_ordinal_hist[_ord_k] = (
+                self.server.auth_cache_hit_ordinal_hist.get(_ord_k, 0) + 1
+            )
             # print(
             #     f"[Server {self.shard.server_id}] candidate_cache_hit "
             #     f"start={start_node} target={target} candidate_server={candidate_server} "
@@ -1233,6 +1243,10 @@ class PeerWalker:
         if self.server is not None:
             # print("キャッシュなしの時")
             self.server.auth_cache_miss += 1
+            # per-key カウンタ (entity key 単位)
+            self.server.auth_cache_miss_per_key[ekey] = (
+                self.server.auth_cache_miss_per_key.get(ekey, 0) + 1
+            )
         # print(
         #     f"[Server {self.shard.server_id}] candidate_check "
         #     f"start={start_node} target={target} candidate_server={candidate_server} "
@@ -1494,6 +1508,20 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
                     self.server.auth_cache_hit
                     / max(1, self.server.auth_cache_hit + self.server.auth_cache_miss)
                 ),
+                # ★ 追加: entity key 単位の per-key hit / miss
+                "auth_cache_hit_per_key": dict(
+                    getattr(self.server, "auth_cache_hit_per_key", {})
+                ),
+                "auth_cache_miss_per_key": dict(
+                    getattr(self.server, "auth_cache_miss_per_key", {})
+                ),
+                # ★ 追加: hit ordinal ヒストグラム {k: その通算 k 回目ヒットの件数}
+                "auth_cache_hit_ordinal_hist": {
+                    str(k): v
+                    for k, v in getattr(
+                        self.server, "auth_cache_hit_ordinal_hist", {}
+                    ).items()
+                },
             }
             self._write_json(payload)
             return
@@ -1692,6 +1720,10 @@ class EdgeAwareHandler(BaseHTTPRequestHandler):
         )
         s.auth_cache_hit = 0
         s.auth_cache_miss = 0
+        s.auth_cache_hit_per_key = {}
+        s.auth_cache_miss_per_key = {}
+        s.auth_cache_hit_ordinal_per_ckey = {}
+        s.auth_cache_hit_ordinal_hist = {}
         s.auth_time_total = 0.0
         s.auth_calls = 0
         s.local_auth_calls = 0
@@ -1779,6 +1811,18 @@ class GraphShardServer(ThreadingHTTPServer):
         )
         self.auth_cache_hit = 0
         self.auth_cache_miss = 0
+        # ---- per-key (= entity key) hit/miss カウンタ ----
+        # ckey は (start_node, entity_key) だが、後段の分析では entity_key 単位で
+        # 見たいので、entity_key (ekey: '0' / 'edge_0_101215' 等) をキーにする
+        self.auth_cache_hit_per_key: Dict[str, int] = {}
+        self.auth_cache_miss_per_key: Dict[str, int] = {}
+        # ---- hit ordinal (= キャッシュエントリ ckey の通算ヒット番号) ----
+        # ckey=(start_node, entity_key) ごとに通算ヒット回数を保持し、
+        # ヒット成立時の通算番号 k をヒストグラム化する。
+        # 「この hit はこのノード(start,entity)の何回目のヒットか」を実測する。
+        # 退去→再挿入があっても counter は消さないので「成立ヒットの通算番号」になる。
+        self.auth_cache_hit_ordinal_per_ckey: Dict[Any, int] = {}
+        self.auth_cache_hit_ordinal_hist: Dict[int, int] = {}
 
         # ---- 計測用：このサーバが参照している入力ファイル ----
         self.edges_path: Optional[str] = None

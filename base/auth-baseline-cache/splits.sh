@@ -18,7 +18,7 @@ HEALTH_INTERVAL=1      # 何秒おきに叩くか
 
 
 # 次はアマゾンでやる、飲み変え前
-GRAPH=vldb
+GRAPH=amazon0601
 EDGE_FILE="dataset/Louvain/graph/${GRAPH}.gr"
 REPO_DIR="./"
 # --- スクリプト自身の絶対パスを取得（zsh / bash どちらでも動く） ---
@@ -39,10 +39,10 @@ START_NODES_LIST=(0 1 2 3 4)
 
 # ====== 全キャッシュポリシーを順番に試す ======
 # CACHE_POLICIES=(  "none" )
-CACHE_POLICIES=("memo" "lru" "arc" )  # "arc" を追加
+CACHE_POLICIES=("lru" )  # "arc" を追加
 # "memo" "lru" 
 # "none" "memo" "lru" 
-CACHE_CAPACITY=100
+CACHE_CAPACITY=50
 
 # ====== サーバ定義 ======
 ## TODO: グラフはここで参照
@@ -159,7 +159,7 @@ wait_health() {
 run_one_policy() {
   local CACHE_POLICY="$1"
 
-  local LOG_DIR="${SCRIPT_DIR}/results/${GRAPH}/${CACHE_POLICY}_${CACHE_CAPACITY}"
+  local LOG_DIR="${SCRIPT_DIR}/results/alpha${ALPHA}_walks${RW_WALKS}_capa${CACHE_CAPACITY}/${GRAPH}/${CACHE_POLICY}_${CACHE_CAPACITY}"
   mkdir -p "${LOG_DIR}"
   local LOG_FILE="${LOG_DIR}/${GRAPH}.log"
   : > "${LOG_FILE}"
@@ -297,7 +297,7 @@ run_one_policy() {
 }
 
 # ====== 全ポリシーを順番に実行 ======
-SUMMARY_DIR="${SCRIPT_DIR}/results/${GRAPH}"
+SUMMARY_DIR="${SCRIPT_DIR}/results/alpha${ALPHA}_walks${RW_WALKS}_capa${CACHE_CAPACITY}/${GRAPH}"
 mkdir -p "${SUMMARY_DIR}"
 SUMMARY_FILE="${SUMMARY_DIR}/all_policies_summary.log"
 : > "${SUMMARY_FILE}"
@@ -320,7 +320,7 @@ for policy in "${CACHE_POLICIES[@]}"; do
   fi
 
   # サマリ収集（Length=1 / Traceback の start_node は除外したうえで集計し、n_valid で per-start 平均を計算する）
-  local_log="${SCRIPT_DIR}/results/${GRAPH}/${policy}_${CACHE_CAPACITY}/${GRAPH}.log"
+  local_log="${SCRIPT_DIR}/results/alpha${ALPHA}_walks${RW_WALKS}_capa${CACHE_CAPACITY}/${GRAPH}/${policy}_${CACHE_CAPACITY}/${GRAPH}.log"
   if [[ -f "${local_log}" ]]; then
     agg=$(awk '
       BEGIN { sum_walk=0; sum_auth=0; n_valid=0; current_avg=-1 }

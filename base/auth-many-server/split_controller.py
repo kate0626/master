@@ -125,35 +125,43 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--request-timeout", default=10.0, type=float, help="HTTP timeout seconds."
     )
-
-    # remote_server と同じ node_to_starts を参照して開始サーバを正しく決めたい
     parser.add_argument(
         "--node-to-starts-file",
         type=str,
         default=None,
-        help="(Optional) base node_to_starts.json path. If set, controller chooses start server using owner_map built from node_to_starts_serverX.json files.",
+        help="(Optional) base node_to_starts.json path.",
     )
-    # デバッグ用に開始サーバ固定もできる
     parser.add_argument(
         "--force-start-server",
         type=int,
         default=None,
         help="(Optional) If set, always send /walk to this server id.",
     )
-
-    # ★追加：集計結果の保存先
     parser.add_argument(
         "--out-dir",
         type=str,
         default=".",
         help="Output directory to save aggregated stats (default: current dir).",
     )
-    # ★追加：ファイル名プレフィックス（複数start_nodeを回すときに便利）
     parser.add_argument(
         "--out-prefix",
         type=str,
         default=None,
-        help="(Optional) Prefix for output filename. If omitted, auto-generated from params.",
+        help="(Optional) Prefix for output filename.",
+    )
+    # ── 2段階 warmup キャッシュ ──
+    parser.add_argument(
+        "--warmup-walks",
+        type=int,
+        default=0,
+        help="Warmup フェーズで実行する walk 本数（0=warmup なし）。"
+             "warmup 後に top-C ノードをサーバキャッシュに prefetch する。",
+    )
+    parser.add_argument(
+        "--cache-capacity",
+        type=int,
+        default=0,
+        help="各サーバの LRU 認証キャッシュ容量。0=無効（デフォルト）。",
     )
     return parser.parse_args()
 
@@ -178,6 +186,34 @@ def get_json(endpoint: str, path: str, timeout: float) -> dict:
 
 def start_walk_on_server(endpoint: str, payload: dict, timeout: float) -> dict:
     return post_json(endpoint, "/walk", payload, timeout=timeout)
+
+
+def reset_cache(endpoint: str, timeout: float) -> bool:
+    try:
+        post_json(endpoint, "/cache/reset", {}, timeout=timeout)
+        return True
+    except Exception as e:
+        print(f"[Controller] cache reset failed {endpoint}: {e}")
+        return False
+
+
+def prefetch_cache(endpoint: str, start_node: int, nodes: list, timeout: float) -> dict:
+    try:
+        return post_json(endpoint, "/cache/prefetch",
+                         {"start_node": start_node, "nodes": nodes}, timeout=timeout)
+    except Exception as e:
+        print(f"[Controller] prefetch failed {endpoint}: {e}")
+        return {}
+
+
+def top_c_from_per_walk(per_walk_access: list, capacity: int) -> list:
+    """per_walk_access リストから累積アクセス上位 capacity エンティティを返す。"""
+    from collections import Counter as _Counter
+    c: _Counter = _Counter()
+    for w in per_walk_access:
+        for ent, cnt in w.get("access", {}).items():
+            c[ent] += int(cnt)
+    return [ent for ent, _ in c.most_common(capacity)]
 
 
 def fetch_access_stats(endpoint: str, timeout: float) -> Optional[dict]:
@@ -247,17 +283,72 @@ def main() -> None:
     }
 
     print(f"[Controller] start_server={start_server}, endpoint={endpoint}")
-    res = start_walk_on_server(endpoint, payload, timeout=args.request_timeout)
 
-    walks = res.get("walks", [])
-    metrics = res.get("metrics", {})
-    duration = metrics.get("duration_sec", res.get("duration"))
+    warmup_walks = max(0, int(args.warmup_walks))
+    cache_capacity = max(0, int(args.cache_capacity))
+    total_walks = int(args.walks)
+    production_walks = total_walks - warmup_walks
 
+    all_walks: list = []
+    warmup_time = 0.0
+
+    # ── Phase 1: warmup ──────────────────────────────────────────
+    if warmup_walks > 0 and cache_capacity > 0:
+        import time as _time
+        print(f"[Controller] === Phase 1: warmup  walks={warmup_walks} ===")
+        warmup_payload = dict(payload)
+        warmup_payload["walks"] = warmup_walks
+        t0 = _time.perf_counter()
+        warmup_res = start_walk_on_server(endpoint, warmup_payload, timeout=args.request_timeout)
+        warmup_time = _time.perf_counter() - t0
+        warmup_walks_result = warmup_res.get("walks", [])
+        all_walks.extend(warmup_walks_result)
+        print(f"[Controller] Warmup done: {len(warmup_walks_result)} walks, {warmup_time:.3f}s")
+
+        # warmup の per_walk から top-C を抽出
+        warmup_per_walk: list = []
+        for idx, w in enumerate(warmup_walks_result, 1):
+            per = defaultdict(int)
+            for ent in w.get("path", []):
+                per[str(ent)] += 1
+            warmup_per_walk.append({"walk_index": idx, "access": dict(per),
+                                    "total_visits": sum(per.values()), "unique_entities": len(per)})
+
+        hot_nodes = top_c_from_per_walk(warmup_per_walk, cache_capacity)
+        print(f"[Controller] Top-{cache_capacity} hot nodes extracted: {len(hot_nodes)} nodes")
+
+        # 全サーバにキャッシュリセット → prefetch
+        for ep in args.server_endpoints:
+            reset_cache(ep, timeout=args.request_timeout)
+        for ep in args.server_endpoints:
+            r = prefetch_cache(ep, int(args.start_node), hot_nodes, timeout=args.request_timeout)
+            print(f"[Controller] Prefetch {ep}: inserted={r.get('inserted',0)}/{r.get('requested',0)}")
+
+        # production フェーズのシードをオフセット
+        prod_seed = (args.seed + warmup_walks) if args.seed is not None else None
+        prod_payload = dict(payload)
+        prod_payload["walks"] = production_walks
+        prod_payload["seed"] = prod_seed
+
+        print(f"[Controller] === Phase 2: production  walks={production_walks} ===")
+        prod_res = start_walk_on_server(endpoint, prod_payload, timeout=args.request_timeout)
+        all_walks.extend(prod_res.get("walks", []))
+        duration = prod_res.get("metrics", {}).get("duration_sec", 0.0)
+        print(f"[Controller] Production done: {len(prod_res.get('walks',[]))} walks, {duration:.3f}s")
+    else:
+        # warmup なし: 従来通り
+        res = start_walk_on_server(endpoint, payload, timeout=args.request_timeout)
+        all_walks = res.get("walks", [])
+        duration = res.get("metrics", {}).get("duration_sec", res.get("duration"))
+
+    walks = all_walks
     total_steps = sum(len(w.get("path", [])) for w in walks)
     avg_len = total_steps / max(1, len(walks))
     print(f"Avg length: {avg_len:.3f}, total steps: {total_steps}")
     if duration is not None:
-        print(f"[Controller] duration {float(duration):.6f}s")
+        print(f"[Controller] production duration {float(duration):.6f}s")
+    if warmup_time > 0:
+        print(f"[Controller] warmup duration {warmup_time:.6f}s")
 
     # RWerごとの訪問回数（差分）と累計を作成
     per_walk_access = []
@@ -309,6 +400,8 @@ def main() -> None:
     total_auth_calls = 0
     total_walk_time = 0.0
     total_walk_calls = 0
+    total_cache_hit = 0
+    total_cache_miss = 0
 
     per_server_stats: list[dict] = []
 
@@ -334,11 +427,17 @@ def main() -> None:
         total_auth_calls += int(stats.get("auth_calls", 0))
         total_walk_time += float(stats.get("walk_time_total", 0.0))
         total_walk_calls += int(stats.get("walk_calls", 0))
+        total_cache_hit += int(stats.get("auth_cache_hit", 0))
+        total_cache_miss += int(stats.get("auth_cache_miss", 0))
 
     print(f"Total authorization time (sum over all servers): {total_auth_time:.6f} s")
     print(f"Total authorization calls (sum over all servers): {total_auth_calls}")
     print(f"Total walk time (sum over all servers): {total_walk_time:.6f} s")
     print(f"Total walk calls (sum over all servers): {total_walk_calls}")
+    if cache_capacity > 0:
+        _lookups = total_cache_hit + total_cache_miss
+        _rate = total_cache_hit / _lookups if _lookups > 0 else 0.0
+        print(f"[Controller] Cache  hit={total_cache_hit}  miss={total_cache_miss}  rate={_rate:.3f}")
 
     if total_auth_calls > 0:
         avg_ms = (total_auth_time / total_auth_calls) * 1000.0
@@ -384,6 +483,8 @@ def main() -> None:
         "auth_calls": total_auth_calls,
         "walk_time_total": total_walk_time,
         "walk_calls": total_walk_calls,
+        "auth_cache_hit": total_cache_hit,
+        "auth_cache_miss": total_cache_miss,
         "controller": {
             "start_node": int(args.start_node),
             "start_server": int(start_server),
@@ -391,6 +492,8 @@ def main() -> None:
             "alpha": float(args.alpha),
             "walks": int(args.walks),
             "seed": args.seed,
+            "warmup_walks": warmup_walks,
+            "cache_capacity": cache_capacity,
             "server_endpoints": list(args.server_endpoints),
         },
         # ★追加：サーバごとの /access_stats 生データ（memory含む）
@@ -431,6 +534,8 @@ def main() -> None:
             "alpha": float(args.alpha),
             "walks": int(args.walks),
             "seed": args.seed,
+            "warmup_walks": warmup_walks,
+            "cache_capacity": cache_capacity,
             "server_endpoints": list(args.server_endpoints),
         },
     }
