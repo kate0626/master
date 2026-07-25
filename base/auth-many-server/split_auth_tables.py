@@ -256,7 +256,12 @@ def build_edge_metis_map(
     for idx, (u, v) in enumerate(edges):
         a, b = sorted((u, v))
         edge_id = f"edge_{a}_{b}"
-        edge_map[edge_id] = max_node + idx + 1
+        # metis.py はエッジ頂点を metis 頂点ID = max_node + idx + 1 (1始まり) で採番する。
+        # load_metis_partition は「行 index i (0始まり) → 頂点 i+1」で part_map をキーする
+        # (part_map[k] = 頂点 k+1 の part)。ノードも assign_node(g)=part_map[g] とこの規約に一致。
+        # よってエッジ lookup キーも「頂点ID − 1」= max_node + idx にする
+        # (+1 のままだと隣の頂点を読み、末尾エッジは範囲外→modulo に脱落する)。
+        edge_map[edge_id] = max_node + idx
     return edge_map
 
 

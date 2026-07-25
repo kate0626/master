@@ -66,7 +66,7 @@ else
 fi
 SCRIPT_DIR="$(cd "$(dirname "${_SELF}")" && pwd -P)"
 unset _SELF
-RW_WALKS=100
+RW_WALKS=10000
 # α (リスタート確率)。環境変数で上書き可: ALPHA_OVERRIDE=0.1
 # 出力先が results/alpha${ALPHA}_... になるので α 別に分かれる。
 ALPHA=${ALPHA_OVERRIDE:-0.01}
@@ -87,13 +87,14 @@ else
   CACHE_POLICIES=("reuse_score")  # デフォルト: reuse_score (新提案: O^θ × L^λ × H^β × D^γ)
 fi
 ## 全ポリシーを回す場合は以下を使用（ただし時間がかかるので注意）
-# CACHE_POLICIES_OVERRIDE="none lru arc bfs_score ppr_gdsf ppr_demand" zsh splits.sh
+## （下は実行例。誤爆防止のためコメントアウト）
+# CACHE_POLICIES_OVERRIDE="none lru arc" zsh base/proposed_cache/splits_reuse_score.sh
 
 # そして本命の ppr_demand はこのコストを一切払いません: _prefetch_* は呼ばれず、seeded=0、BFS もなし。
 # 距離は walker の hops_done から取るだけ。なので「prefetch が遅い」という懸念は ppr_gdsf 固有で、p
 # pr_demand では構造的に解消済み、というのが現状です。
 
-CACHE_CAPACITY=${CACHE_CAPACITY_OVERRIDE:-200}
+CACHE_CAPACITY=${CACHE_CAPACITY_OVERRIDE:-100}
 
 ##TODO: ここで ppr_demand のパラメータを環境変数で上書き可能にする
 # ppr_demand (本命: prefetch なし・加法スコア) のパラメータ
@@ -171,18 +172,32 @@ PREFETCH_DECAY_MODE=data_fit  # γ 決定モード: manual | data_fit
 # 既存 baseline 実験の出力 (bfs_score の頻度ヒントとして使う)
 ATTEMPTS_HINT_DIR="${REPO_DIR}base/auth-baseline-cache/results/alpha${ALPHA}_walks_${RW_WALKS}_capa_${CACHE_CAPACITY}/${GRAPH}/none_100"
 
-# ====== サーバ定義 ======
-## TODO: グラフはここで参照
-SERVERS=(
-  "host=ab06 id=0 ip=10.58.60.6 port=3000 nts=base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts_server0.json"
-  "host=ab11 id=1 ip=10.58.60.11 port=3000 nts=base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/node_to_starts_server1.json"
-)
+# ====== サーバ定義 (servers.conf から K 台ぶん読み込み) ======
+# servers.conf: 1行1台で "host id ip port"。id は 0 から連番。空行/# コメント可。
+# 別ファイルを使う場合: SERVERS_CONF=/path/to/other.conf zsh splits_reuse_score.sh
+# node_to_starts のファイル名 stem を差し替えたい場合 (NG deny リスト等):
+#   NTS_STEM=entity_to_denied_starts zsh splits_reuse_score.sh
+SERVERS_CONF="${SERVERS_CONF:-${SCRIPT_DIR}/servers.conf}"
+NTS_STEM="${NTS_STEM:-node_to_starts}"
+NTS_DIR="base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}"
 
-# NG deny を使う時
-# SERVERS=(
-#   "host=ab06 id=0 ip=10.58.60.6 port=3000 nts=base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/entity_to_denied_starts_server0.json"
-#   "host=ab11 id=1 ip=10.58.60.11 port=3000 nts=base/auth-many-server/data/splits/${GRAPH}/${NG_RATE}/entity_to_denied_starts_server1.json"
-# )
+if [[ ! -f "${SERVERS_CONF}" ]]; then
+  echo "[FATAL] servers.conf が見つかりません: ${SERVERS_CONF}" >&2
+  exit 1
+fi
+
+# nts パスは id テンプレートから自動生成する (server<id> を付与)。
+SERVERS=()
+while read -r _host _id _ip _port _rest; do
+  # 空行 / コメント行 skip
+  [[ -z "${_host}" || "${_host}" == \#* ]] && continue
+  SERVERS+=("host=${_host} id=${_id} ip=${_ip} port=${_port} nts=${NTS_DIR}/${NTS_STEM}_server${_id}.json")
+done < "${SERVERS_CONF}"
+
+if (( ${#SERVERS[@]} == 0 )); then
+  echo "[FATAL] servers.conf に有効なサーバ行がありません: ${SERVERS_CONF}" >&2
+  exit 1
+fi
 
 SERVER_COUNT=${#SERVERS[@]}
 SERVER_ENDPOINTS=()
@@ -191,6 +206,7 @@ for entry in "${SERVERS[@]}"; do
   SERVER_ENDPOINTS+=("${ip}:${port}")
 done
 SERVER_ENDPOINTS_STR="${SERVER_ENDPOINTS[*]}"
+echo ">>> [SERVERS] ${SERVER_COUNT} 台 (conf=${SERVERS_CONF}): ${SERVER_ENDPOINTS_STR}"
 
 # ====== 後始末（全ポリシー共通） ======
 cleanup() {
@@ -404,8 +420,8 @@ run_one_policy() {
       echo "=== [START_NODE] ${start_node} (policy=${CACHE_POLICY}) ==="
       local OUT_PREFIX="start=${start_node}_walks=${RW_WALKS}_alpha=${ALPHA}_seed=42_${POLICY_TAG}"
       python3 base/proposed_cache/split_controller_reuse_score.py \
-        --servers 2 \
-        --server-endpoints 10.58.60.6:3000 10.58.60.11:3000 \
+        --servers "${SERVER_COUNT}" \
+        --server-endpoints "${SERVER_ENDPOINTS[@]}" \
         --start-node "${start_node}" \
         --walks ${RW_WALKS} \
         --alpha ${ALPHA} \

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# 再生成可能な生成物(walk ログ・controller出力・サーバログ)は追跡外
+**/results/*.jsonl
+**/results/start=*
+**/results/*.log

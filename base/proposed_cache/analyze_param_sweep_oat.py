@@ -142,6 +142,36 @@ def matches_anchor(r, anchor, axis, anchor_lw):
     return True
 
 
+def best_anchor_for_axis(merged, policy, axis):
+    """axis を最も多くの値で振っている操作点 (他パラメータの固定値) を自動検出する。
+    返り値: (anchor_dict, anchor_lw, n_values) / データ無しなら None。
+    """
+    other = [p for p in ("theta", "lambda", "beta", "gamma", "rho") if p != axis]
+    groups = {}  # key(tuple) -> set(axis値)
+    for r in merged:
+        if r["policy"] != policy:
+            continue
+        lwv = int(fv(r["lw"]) or 0)
+        xv = lwv if axis == "lw" else param_value(r, axis)
+        if xv is None:
+            continue
+        key = tuple((p, param_value(r, p)) for p in other)
+        if axis != "lw":
+            key = key + (("lw", lwv),)
+        groups.setdefault(key, set()).add(xv)
+    if not groups:
+        return None
+    best_key = max(groups, key=lambda k: len(groups[k]))
+    anc = dict(ANCHOR_DEFAULT)
+    lw = 0
+    for p, v in best_key:
+        if p == "lw":
+            lw = int(v or 0)
+        elif v is not None:
+            anc[p] = v
+    return anc, lw, len(groups[best_key])
+
+
 def collect_axis(merged, policy, axis, anchor, anchor_lw):
     """axis を振った (value, hit_rate, walk_time) のリストを value 昇順で返す。"""
     pts = {}
@@ -280,6 +310,9 @@ def main():
     ap.add_argument("--anchor-beta", type=float, default=None)
     ap.add_argument("--anchor-gamma", type=float, default=None)
     ap.add_argument("--anchor-rho", type=float, default=None)
+    ap.add_argument("--auto-anchor", action="store_true",
+                    help="各軸ごとに、その軸を最も多く振っている操作点を自動で anchor にする "
+                         "(操作点が軸ごとに違っても全点が出る)。--anchor-* 手動指定より優先。")
     ap.add_argument("--baselines", nargs="*", default=["lru", "arc", "memo"])
     ap.add_argument("--out-subdir", default="param_sweep")
     args = ap.parse_args()
@@ -323,23 +356,32 @@ def main():
 
     best_rows = []
     for axis in AXES:
-        series = collect_axis(merged, args.policy, axis, anchor, args.anchor_lw)
+        # auto-anchor: この軸を最も多く振っている操作点を自動採用
+        ax_anchor, ax_lw = anchor, args.anchor_lw
+        if args.auto_anchor:
+            ba = best_anchor_for_axis(merged, args.policy, axis)
+            if ba:
+                ax_anchor, ax_lw, _n = ba
+                fixed = ", ".join(f"{p}={ax_anchor[p]:g}" for p in ax_anchor if p != axis)
+                print(f"[AUTO] axis={axis}: anchor=[{fixed}, lw={ax_lw}] ({_n} 値)")
+        ax_base_hit = anchor_hit(merged, args.policy, ax_anchor, ax_lw)
+        series = collect_axis(merged, args.policy, axis, ax_anchor, ax_lw)
         if not series:
             print(f"[SKIP] axis={axis}: 該当データなし")
             continue
         c_path = out_dir / f"sweep_{axis}.csv"
         p_path = out_dir / f"sweep_{axis}.png"
-        write_axis_csv(c_path, axis, series, base_hit, baselines)
-        plot_axis(p_path, axis, series, base_hit, baselines, args.anchor_lw,
-                  condition, const_str, anchor)
+        write_axis_csv(c_path, axis, series, ax_base_hit, baselines)
+        plot_axis(p_path, axis, series, ax_base_hit, baselines, ax_lw,
+                  condition, const_str, ax_anchor)
         # 各軸のベスト
         valid = [(x, h) for x, h, _ in series if h is not None]
         bx, bh = max(valid, key=lambda t: t[1]) if valid else (None, None)
         best_rows.append({
             "axis": axis, "n_values": len(series),
             "best_value": bx, "best_hit_rate": None if bh is None else round(bh, 6),
-            "anchor_hit_rate": None if base_hit is None else round(base_hit, 6),
-            "gain_vs_anchor": None if (bh is None or base_hit is None) else round(bh - base_hit, 6),
+            "anchor_hit_rate": None if ax_base_hit is None else round(ax_base_hit, 6),
+            "gain_vs_anchor": None if (bh is None or ax_base_hit is None) else round(bh - ax_base_hit, 6),
         })
         print(f"[SAVED] {c_path.name}, {p_path.name}  "
               f"(n={len(series)}, best {axis}={bx} hit={bh})")
