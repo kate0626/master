@@ -2,8 +2,8 @@
 
 `base/proposed_cache/` の分散 RW コードをコピーし、**RTT を組み込むが提案手法のスコア計算はしない**版。
 
-- `split_remote_server_rtt.py` ← `proposed_cache/split_remote_server_proposed.py` のコピー + RTT 組込み
-- `split_controller_rtt.py`     ← `proposed_cache/split_controller_proposed.py` のコピー(無改変)
+- `split_remote_server_rtt.py` ← `proposed_cache/archive/legacy_proposed/split_remote_server_proposed.py` のコピー + RTT 組込み
+- `split_controller_rtt.py`     ← `proposed_cache/archive/legacy_proposed/split_controller_proposed.py` のコピー(無改変)
 
 ## 何を足したか(サーバ)
 

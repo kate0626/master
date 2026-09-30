@@ -1,0 +1,7 @@
+RESULT	lru	overall=31.12	node=39.00	edge=24.06	accesses=8903	remote_auth=6132	local_auth=0	servers=2
+RESULT	arc	overall=31.12	node=39.00	edge=24.06	accesses=8903	remote_auth=6132	local_auth=0	servers=2
+RESULT	proposed	overall=31.12	node=39.00	edge=24.06	accesses=8903	remote_auth=6132	local_auth=0	servers=2
+RESULT	structured_frozen	overall=31.12	node=39.00	edge=24.06	accesses=8903	remote_auth=6132	local_auth=0	servers=2
+RESULT	structured_oonly	overall=31.12	node=39.00	edge=24.06	accesses=8903	remote_auth=6132	local_auth=0	servers=2
+RESULT	structured	overall=31.12	node=39.00	edge=24.06	accesses=8903	remote_auth=6132	local_auth=0	servers=2
+RESULT	structured_edc	overall=31.12	node=39.00	edge=24.06	accesses=8903	remote_auth=6132	local_auth=0	servers=2

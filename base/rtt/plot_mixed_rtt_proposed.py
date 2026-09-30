@@ -404,8 +404,9 @@ def _draw_stacked(ax, graphs, walk_vals: dict, sim_vals: dict, policies=None, ba
             hatch="///",
             alpha=0.85,
         )
-        totals = [wi + ai for wi, ai in zip(w, a)]
-        _annotate(ax, bars_a, totals, fmt="{:.1f}")
+        # 棒だけ残し、棒上の合計値注記は一旦出さない。
+        # totals = [wi + ai for wi, ai in zip(w, a)]
+        # _annotate(ax, bars_a, totals, fmt="{:.1f}")
     return x
 
 
@@ -426,18 +427,19 @@ def _draw_diff(ax, graphs, diff_vals: dict, policies=None, bar_width=0.15):
             linewidth=0.5,
             label=POLICY_LABELS.get(policy, policy),
         )
-        for bar, val in zip(bars, vals):
-            if abs(val) < 1e-6:
-                continue
-            va = "bottom" if val >= 0 else "top"
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height(),
-                f"{val:+.1f}",
-                ha="center",
-                va=va,
-                fontsize=8,
-            )
+        # 棒だけ残し、差分値の注記は一旦出さない。
+        # for bar, val in zip(bars, vals):
+        #     if abs(val) < 1e-6:
+        #         continue
+        #     va = "bottom" if val >= 0 else "top"
+        #     ax.text(
+        #         bar.get_x() + bar.get_width() / 2,
+        #         bar.get_height(),
+        #         f"{val:+.1f}",
+        #         ha="center",
+        #         va=va,
+        #         fontsize=8,
+        #     )
     ax.axhline(0, color="black", linewidth=0.8)
     return x
 
@@ -566,10 +568,11 @@ def make_diff_all_chart(graphs, diff_per_pattern, out_path, policies=None):
         v = diff_per_pattern[pat["key"]]
         memo_totals = v.get("memo_totals", [0.0] * len(graphs))
         x = _draw_diff(ax, graphs, v["diff"], policies=policies)
-        xlabels = [
-            f"{GRAPH_LABELS.get(g, g)}\n(memo={mt:.1f}s)"
-            for g, mt in zip(graphs, memo_totals)
-        ]
+        # xlabels = [
+        #     f"{GRAPH_LABELS.get(g, g)}\n(memo={mt:.1f}s)"
+        #     for g, mt in zip(graphs, memo_totals)
+        # ]
+        xlabels = [GRAPH_LABELS.get(g, g) for g in graphs]
         ax.set_xticks(x)
         ax.set_xticklabels(xlabels, fontsize=9)
         e_rtt = expected_rtt_ms(pat["weights"])
@@ -618,21 +621,22 @@ def _draw_lru_vs_proposed_ax(ax, graphs, lru_totals, prop_totals, title):
     ylim_top = y_max * 1.30
     ax.set_ylim(0, ylim_top)
 
-    for xi, (lt, pt) in enumerate(zip(lru_totals, prop_totals)):
-        # バー頂上の数値
-        ax.text(xi - bar_w / 2, lt + ylim_top * 0.01,
-                f"{lt:.1f}", ha="center", va="bottom", fontsize=8)
-        ax.text(xi + bar_w / 2, pt + ylim_top * 0.01,
-                f"{pt:.1f}", ha="center", va="bottom", fontsize=8)
-        # 差分ラベル (バーの高い方の上に配置)
-        if lt > 0:
-            diff = pt - lt
-            sign = "▲" if diff > 0 else "▼"
-            color_arrow = "red" if diff > 0 else "green"
-            ax.text(xi, max(lt, pt) + ylim_top * 0.09,
-                    f"{sign}{abs(diff):.1f}s\n({diff / lt * 100:+.1f}%)",
-                    ha="center", va="bottom", fontsize=8,
-                    color=color_arrow, fontweight="bold")
+    # 棒だけ残し、LRU/提案手法の実数値と差分ラベルは一旦出さない。
+    # for xi, (lt, pt) in enumerate(zip(lru_totals, prop_totals)):
+    #     # バー頂上の数値
+    #     ax.text(xi - bar_w / 2, lt + ylim_top * 0.01,
+    #             f"{lt:.1f}", ha="center", va="bottom", fontsize=8)
+    #     ax.text(xi + bar_w / 2, pt + ylim_top * 0.01,
+    #             f"{pt:.1f}", ha="center", va="bottom", fontsize=8)
+    #     # 差分ラベル (バーの高い方の上に配置)
+    #     if lt > 0:
+    #         diff = pt - lt
+    #         sign = "▲" if diff > 0 else "▼"
+    #         color_arrow = "red" if diff > 0 else "green"
+    #         ax.text(xi, max(lt, pt) + ylim_top * 0.09,
+    #                 f"{sign}{abs(diff):.1f}s\n({diff / lt * 100:+.1f}%)",
+    #                 ha="center", va="bottom", fontsize=8,
+    #                 color=color_arrow, fontweight="bold")
 
     ax.set_xticks(x)
     ax.set_xticklabels([GRAPH_LABELS.get(g, g) for g in graphs], fontsize=10)

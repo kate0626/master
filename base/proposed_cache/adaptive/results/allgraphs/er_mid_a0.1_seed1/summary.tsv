@@ -1,0 +1,10 @@
+RESULT	lru	overall=21.03	node=22.93	edge=19.32	accesses=8939	remote_auth=7059	local_auth=0	servers=2
+RESULT	arc	overall=29.11	node=30.11	edge=28.21	accesses=8939	remote_auth=6337	local_auth=0	servers=2
+RESULT	lfu	overall=26.39	node=25.86	edge=26.87	accesses=8939	remote_auth=6580	local_auth=0	servers=2
+RESULT	lecar	overall=27.81	node=28.29	edge=27.38	accesses=8939	remote_auth=6453	local_auth=0	servers=2
+RESULT	cacheus	overall=25.33	node=23.75	edge=26.74	accesses=8939	remote_auth=6675	local_auth=0	servers=2
+RESULT	proposed	overall=27.03	node=28.81	edge=25.43	accesses=8939	remote_auth=6523	local_auth=0	servers=2
+RESULT	structured_oonly	overall=26.47	node=28.50	edge=24.64	accesses=8939	remote_auth=6573	local_auth=0	servers=2
+RESULT	structured	overall=26.94	node=28.95	edge=25.13	accesses=8939	remote_auth=6531	local_auth=0	servers=2
+RESULT	structured_prior	overall=28.22	node=29.56	edge=27.02	accesses=8939	remote_auth=6416	local_auth=0	servers=2
+RESULT	belady	overall=38.17	node=40.61	edge=35.97	accesses=8939	remote_auth=5527	local_auth=0	servers=2

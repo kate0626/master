@@ -1,0 +1,7 @@
+tag	policy	cum_hit	cum_node	cum_edge	first_batch_hit	last_batch_hit	good%	regret%	pair_acc%
+lru	lru	31.0325	38.5185	24.2777	27.8204	32.9412	nan	nan	nan
+arc	arc	36.3935	45.2091	28.4390	32.4206	36.8235	nan	nan	nan
+structured_frozen	structured	31.0325	38.5185	24.2777	27.8204	32.9412	89.13	10.87	55.05
+structured_oonly	structured	37.7536	45.5914	30.6813	31.9825	40.3529	88.21	11.79	78.79
+structured	structured	39.4424	47.2879	32.3631	22.1249	44.7059	91.74	8.26	78.90
+structured_edc	structured	39.3744	47.7180	31.8456	22.5630	45.2941	91.83	8.17	78.40

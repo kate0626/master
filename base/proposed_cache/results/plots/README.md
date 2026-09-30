@@ -16,7 +16,7 @@ LAMBDA_LIST_OVERRIDE="1.0" \
 HOP_EXP_LIST_OVERRIDE="0.5 1.0 2.0" \
 DEG_EXP_LIST_OVERRIDE="0.0 0.5 1.0" \
 LEARNING_WALKS_LIST_OVERRIDE="0 20 40" \
-zsh base/proposed_cache/sweep_ppr_params.sh
+zsh base/proposed_cache/sweeps/sweep_ppr_params.sh
 ② α=0.05
 
 ALPHA_OVERRIDE=0.05 \
@@ -28,7 +28,7 @@ LAMBDA_LIST_OVERRIDE="1.0" \
 HOP_EXP_LIST_OVERRIDE="0.5 1.0 2.0" \
 DEG_EXP_LIST_OVERRIDE="0.0 0.5 1.0" \
 LEARNING_WALKS_LIST_OVERRIDE="0 20 40" \
-zsh base/proposed_cache/sweep_ppr_params.sh
+zsh base/proposed_cache/sweeps/sweep_ppr_params.sh
 ③ α=0.1
 
 ALPHA_OVERRIDE=0.1 \
@@ -40,18 +40,18 @@ LAMBDA_LIST_OVERRIDE="1.0" \
 HOP_EXP_LIST_OVERRIDE="0.5 1.0 2.0" \
 DEG_EXP_LIST_OVERRIDE="0.0 0.5 1.0" \
 LEARNING_WALKS_LIST_OVERRIDE="0 20 40" \
-zsh base/proposed_cache/sweep_ppr_params.sh
+zsh base/proposed_cache/sweeps/sweep_ppr_params.sh
 
 
 
 ## グラフ更新時のUpdate
 ### Step 1: amazon0601 用 CSV 生成
 cd /Users/maiko/Documents/GitHub/master-progrem
-python3 base/proposed_cache/generate_results_csv.py --graph amazon0601
+python3 base/proposed_cache/sweeps/generate_results_csv.py --graph amazon0601
 → results/all_amazon0601_nobt_settings.csv と results/all_amazon0601_nobt_results.csv が生成される
 
 ### Step 2: 8枚のプロットを一括生成
-GRAPH=amazon0601 zsh base/proposed_cache/run_all_plots.sh
+GRAPH=amazon0601 zsh base/proposed_cache/archive/legacy_proposed/run_all_plots.sh
 → results/plots/amazon0601/ に 8 PNG が出力される
 
 ## Step 3: vldb との比較
